@@ -1,615 +1,378 @@
+import streamlit as st
 import numpy as np
-import random
-import math
-import pulp
-
-
-# ===================== 计算地球球面距离（KM） =====================
-def haversine_km(lon1, lat1, lon2, lat2):
-    R = 6371  # 地球半径 km
-    lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
-    dlon = lon2 - lon1
-    dlat = lat2 - lat1
-    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
-    return 2 * R * np.arcsin(np.sqrt(a))
-
-
-def is_valid_solution(df, selected_ids, min_spacing=0.8):
-    """检查解决方案是否满足最小间距约束"""
-    if len(selected_ids) <= 1:
-        return True
-
-    coords = df.loc[selected_ids, ["lon", "lat"]].values
-    n = len(coords)
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = haversine_km(coords[i][0], coords[i][1],
-                             coords[j][0], coords[j][1])
-            if d < min_spacing:
-                return False
-    return True
-
-
-def calculate_min_spacing(df, selected_ids):
-    """计算当前解中风机之间的最小间距"""
-    if len(selected_ids) <= 1:
-        return float('inf')
-
-    coords = df.loc[selected_ids, ["lon", "lat"]].values
-    n = len(coords)
-    min_distance = float('inf')
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = haversine_km(coords[i][0], coords[i][1],
-                             coords[j][0], coords[j][1])
-            if d < min_distance:
-                min_distance = d
-
-    return min_distance
-
-
-# ===================== 评估函数 =====================
-def evaluate_solution(df, selected_ids, cost_weight,
-                      max_slope, max_road_distance, min_residential_distance,
-                      min_heritage_distance, min_geology_distance, min_water_distance,
-                      min_spacing=0.8):  # 默认间距0.8km
-    """评估解决方案的适应度"""
-    if not is_valid_solution(df, selected_ids, min_spacing):
-        return -1e9  # 大幅增加间距约束惩罚
-
-    # 能量产出
-    energy = np.sum(df.loc[selected_ids, "wind_power_density"]) * 10
-
-    # 成本惩罚
-    max_cost = df["cost"].max() if df["cost"].max() > 0 else 1
-    cost = cost_weight * np.sum(df.loc[selected_ids, "cost"]) / max_cost * 1000
-
-    # 约束惩罚
-    constraint_penalty = 0
-
-    # 坡度约束惩罚
-    if 'slope' in df.columns:
-        slope_violation = np.sum(df.loc[selected_ids, "slope"] > max_slope)
-        constraint_penalty += slope_violation * 1000
-
-    # 道路距离约束惩罚
-    if 'road_distance' in df.columns:
-        road_violation = np.sum(df.loc[selected_ids, "road_distance"] > max_road_distance)
-        constraint_penalty += road_violation * 1000
-
-    # 居民区距离约束惩罚
-    if 'residential_distance' in df.columns:
-        residential_violation = np.sum(df.loc[selected_ids, "residential_distance"] < min_residential_distance)
-        constraint_penalty += residential_violation * 1000
-
-    # 文化遗产距离约束惩罚
-    if 'heritage_distance' in df.columns:
-        heritage_violation = np.sum(df.loc[selected_ids, "heritage_distance"] < min_heritage_distance)
-        constraint_penalty += heritage_violation * 1000
-
-    # 地质距离约束惩罚
-    if 'geology_distance' in df.columns:
-        geology_violation = np.sum(df.loc[selected_ids, "geology_distance"] < min_geology_distance)
-        constraint_penalty += geology_violation * 1000
-
-    # 水源距离约束惩罚
-    if 'water_distance' in df.columns:
-        water_violation = np.sum(df.loc[selected_ids, "water_distance"] < min_water_distance)
-        constraint_penalty += water_violation * 1000
-
-    # 电网接近度奖励
-    if 'grid_proximity' in df.columns:
-        grid_reward = np.sum(df.loc[selected_ids, "grid_proximity"]) * 100
-        energy += grid_reward
-
-    return energy - cost - constraint_penalty
-
-
-# ===================== 基础操作函数 =====================
-def mutate_solution_with_spacing(solution, valid_points, df, min_spacing=0.8, rate=0.3):
-    """变异操作 - 考虑间距约束"""
-    child = solution.copy()
-    mutation_attempts = 0
-    max_attempts = 50
-
-    for _ in range(int(len(solution) * rate)):
-        if mutation_attempts >= max_attempts:
-            break
-
-        pos = random.randint(0, len(child) - 1)
-        old_point = child[pos]
-
-        # 尝试找到满足间距的新点位
-        for attempt in range(20):
-            new_point = random.choice(valid_points)
-            if new_point in child:
-                continue
-
-            # 临时替换并检查间距
-            temp_solution = child.copy()
-            temp_solution[pos] = new_point
-
-            if is_valid_solution(df, temp_solution, min_spacing):
-                child[pos] = new_point
-                break
-
-        mutation_attempts += 1
-
-    # 确保解有效
-    if not is_valid_solution(df, child, min_spacing):
-        # 如果无效，返回原始解
-        return solution
-
-    return child
-
-
-def crossover_solution_with_spacing(p1, p2, df, min_spacing=0.8):
-    """交叉操作 - 考虑间距约束"""
-    n = len(p1)
-
-    # 尝试多种交叉策略
-    for attempt in range(10):
-        # 方法1: 单点交叉
-        point = random.randint(1, n - 2)
-        child = p1[:point] + [g for g in p2 if g not in p1[:point]]
-
-        # 补全长度的同时避免重复
-        if len(child) < n:
-            available_points = [p for p in p2 if p not in child]
-            missing = n - len(child)
-            if len(available_points) >= missing:
-                child.extend(random.sample(available_points, missing))
-            else:
-                # 如果p2中点数不够，从valid_points中补充
-                all_valid = list(set(p1 + p2))
-                additional = [p for p in all_valid if p not in child]
-                if len(additional) >= missing:
-                    child.extend(random.sample(additional, missing))
-
-        # 检查间距约束
-        if len(child) == n and is_valid_solution(df, child, min_spacing):
-            return child
-
-    # 如果交叉失败，返回较好的父代
-    p1_fitness = len(set(p1))
-    p2_fitness = len(set(p2))
-    return p1 if p1_fitness >= p2_fitness else p2
-
-
-# ===================== 遗传算法 =====================
-def run_genetic_algorithm(df, n_turbines, cost_weight,
-                          max_slope, max_road_distance, min_residential_distance,
-                          min_heritage_distance, min_geology_distance, min_water_distance,
-                          pop_size=40, generations=80, mutation_rate=0.25, crossover_rate=0.8,
-                          min_spacing=0.8):  # 添加间距参数
-    """运行遗传算法"""
-    valid_points = df[df["valid"] == 1].index.tolist()
-
-    if len(valid_points) < n_turbines:
-        return {"algorithm": "遗传算法", "solution": [], "fitness": -1, "convergence_history": [], "min_spacing_km": 0}
-
-    # 生成初始种群时确保满足间距约束
-    population = []
-    attempts = 0
-    while len(population) < pop_size and attempts < pop_size * 10:
-        candidate = random.sample(valid_points, n_turbines)
-        if is_valid_solution(df, candidate, min_spacing):
-            population.append(candidate)
-        attempts += 1
-
-    # 如果无法生成足够的初始解，使用不满足约束的初始解
-    if len(population) < pop_size:
-        additional_needed = pop_size - len(population)
-        additional = [random.sample(valid_points, n_turbines) for _ in range(additional_needed)]
-        population.extend(additional)
-
-    best_solution, best_fitness = None, -1e6
-    history = []
-
-    for g in range(generations):
-        fitness_scores = [evaluate_solution(df, sol, cost_weight,
-                                            max_slope, max_road_distance, min_residential_distance,
-                                            min_heritage_distance, min_geology_distance, min_water_distance,
-                                            min_spacing)  # 传递间距参数
-                          for sol in population]
-
-        # 更新最优解
-        best_idx = np.argmax(fitness_scores)
-        if fitness_scores[best_idx] > best_fitness:
-            best_fitness = fitness_scores[best_idx]
-            best_solution = population[best_idx]
-
-        history.append(best_fitness)
-
-        # 轮盘赌选择
-        fitness_array = np.array(fitness_scores)
-        fitness_array = np.maximum(fitness_array, 1e-6)  # 避免负值
-        probabilities = fitness_array / np.sum(fitness_array)
-
-        new_pop = []
-        for _ in range(pop_size // 2):
-            p1 = population[np.random.choice(len(population), p=probabilities)]
-            p2 = population[np.random.choice(len(population), p=probabilities)]
-
-            if random.random() < crossover_rate:
-                c1 = crossover_solution_with_spacing(p1, p2, df, min_spacing)
-                c2 = crossover_solution_with_spacing(p2, p1, df, min_spacing)
-            else:
-                c1, c2 = p1.copy(), p2.copy()
-
-            c1 = mutate_solution_with_spacing(c1, valid_points, df, min_spacing, mutation_rate)
-            c2 = mutate_solution_with_spacing(c2, valid_points, df, min_spacing, mutation_rate)
-
-            new_pop.extend([c1, c2])
-
-        # 保留最优解
-        if best_solution is not None:
-            new_pop[0] = best_solution
-
-        population = new_pop
-
-    # 计算最终解的最小间距
-    min_spacing_achieved = calculate_min_spacing(df, best_solution) if best_solution else 0
-
-    return {
-        "algorithm": "遗传算法",
-        "solution": best_solution,
-        "fitness": best_fitness,
-        "convergence_history": history,
-        "min_spacing_km": min_spacing_achieved
-    }
-
-
-# ===================== 模拟退火算法 =====================
-def run_simulated_annealing(df, n_turbines, cost_weight,
-                            max_slope, max_road_distance, min_residential_distance,
-                            min_heritage_distance, min_geology_distance, min_water_distance,
-                            initial_temp=2000, cooling_rate=0.97, iterations_per_temp=100,
-                            min_spacing=0.8):  # 添加间距参数
-    """运行模拟退火算法"""
-    valid_points = df[df["valid"] == 1].index.tolist()
-
-    if len(valid_points) < n_turbines:
-        return {"algorithm": "模拟退火算法", "solution": [], "fitness": -1, "convergence_history": [],
-                "min_spacing_km": 0}
-
-    # 生成满足间距约束的初始解
-    current = None
-    for attempt in range(100):
-        candidate = random.sample(valid_points, n_turbines)
-        if is_valid_solution(df, candidate, min_spacing):
-            current = candidate
-            break
-
-    if current is None:
-        current = random.sample(valid_points, n_turbines)
-
-    current_fitness = evaluate_solution(df, current, cost_weight,
-                                        max_slope, max_road_distance, min_residential_distance,
-                                        min_heritage_distance, min_geology_distance, min_water_distance,
-                                        min_spacing)
-
-    best_solution, best_fitness = current, current_fitness
-    T, cooling = initial_temp, cooling_rate
-    history = [best_fitness]
-
-    for step in range(iterations_per_temp):
-        neighbor = mutate_solution_with_spacing(current, valid_points, df, min_spacing, 0.3)
-        f_new = evaluate_solution(df, neighbor, cost_weight,
-                                  max_slope, max_road_distance, min_residential_distance,
-                                  min_heritage_distance, min_geology_distance, min_water_distance,
-                                  min_spacing)
-
-        if f_new > current_fitness or random.random() < math.exp((f_new - current_fitness) / T):
-            current, current_fitness = neighbor, f_new
-
-        if current_fitness > best_fitness:
-            best_solution, best_fitness = current, current_fitness
-
-        history.append(best_fitness)
-        T *= cooling
-
-    min_spacing_achieved = calculate_min_spacing(df, best_solution) if best_solution else 0
-
-    return {
-        "algorithm": "模拟退火算法",
-        "solution": best_solution,
-        "fitness": best_fitness,
-        "convergence_history": history,
-        "min_spacing_km": min_spacing_achieved
-    }
-
-
-# ===================== 粒子群优化算法 =====================
-def run_pso(df, n_turbines, cost_weight,
-            max_slope, max_road_distance, min_residential_distance,
-            min_heritage_distance, min_geology_distance, min_water_distance,
-            pop_size=30, generations=100, w=0.7, c1=1.5, c2=1.5,
-            min_spacing=0.8):  # 添加间距参数
-    """运行粒子群优化算法"""
-    valid_points = df[df["valid"] == 1].index.tolist()
-
-    if len(valid_points) < n_turbines:
-        return {"algorithm": "粒子群优化算法", "solution": [], "fitness": -1, "convergence_history": [],
-                "min_spacing_km": 0}
-
-    # 初始化粒子群
-    particles = []
-    for _ in range(pop_size):
-        candidate = random.sample(valid_points, n_turbines)
-        particles.append(candidate)
-
-    personal_best = particles.copy()
-    personal_best_fitness = [evaluate_solution(df, p, cost_weight,
-                                               max_slope, max_road_distance, min_residential_distance,
-                                               min_heritage_distance, min_geology_distance, min_water_distance,
-                                               min_spacing)
-                             for p in particles]
-
-    global_best_idx = np.argmax(personal_best_fitness)
-    global_best = particles[global_best_idx]
-    global_best_fitness = personal_best_fitness[global_best_idx]
-
-    history = [global_best_fitness]
-
-    for g in range(generations):
-        for i in range(pop_size):
-            # 更新粒子位置
-            new_particle = []
-            for j in range(n_turbines):
-                if random.random() < w:  # 惯性
-                    new_particle.append(particles[i][j])
-                elif random.random() < c1 / (c1 + c2):  # 个体经验
-                    new_particle.append(personal_best[i][j])
-                else:  # 社会经验
-                    new_particle.append(global_best[j])
-
-            # 去重和补全
-            new_particle = list(dict.fromkeys(new_particle))
-            while len(new_particle) < n_turbines:
-                available = [p for p in valid_points if p not in new_particle]
-                if available:
-                    new_particle.append(random.choice(available))
-                else:
-                    break
-            new_particle = new_particle[:n_turbines]
-
-            # 评估新位置
-            new_fitness = evaluate_solution(df, new_particle, cost_weight,
-                                            max_slope, max_road_distance, min_residential_distance,
-                                            min_heritage_distance, min_geology_distance, min_water_distance,
-                                            min_spacing)
-
-            # 更新个体最优
-            if new_fitness > personal_best_fitness[i]:
-                personal_best[i] = new_particle
-                personal_best_fitness[i] = new_fitness
-
-            particles[i] = new_particle
-
-        # 更新全局最优
-        current_best_idx = np.argmax(personal_best_fitness)
-        if personal_best_fitness[current_best_idx] > global_best_fitness:
-            global_best = personal_best[current_best_idx]
-            global_best_fitness = personal_best_fitness[current_best_idx]
-
-        history.append(global_best_fitness)
-
-    min_spacing_achieved = calculate_min_spacing(df, global_best) if global_best else 0
-
-    return {
-        "algorithm": "粒子群优化算法",
-        "solution": global_best,
-        "fitness": global_best_fitness,
-        "convergence_history": history,
-        "min_spacing_km": min_spacing_achieved
-    }
-
-
-# ===================== PuLP优化求解器 =====================
-def run_pulp_optimizer(df, n_turbines, cost_weight,
-                       max_slope, max_road_distance, min_residential_distance,
-                       min_heritage_distance, min_geology_distance, min_water_distance,
-                       solver_type='CBC', time_limit=60,
-                       min_spacing=0.8):  # 添加间距参数
-    """使用PuLP求解器进行优化"""
-    try:
-        # 筛选有效点位
-        valid_df = df[df["valid"] == 1].copy()
-
-        if len(valid_df) < n_turbines:
-            return {"algorithm": "PuLP优化求解器", "solution": [], "fitness": -1, "convergence_history": [],
-                    "min_spacing_km": 0}
-
-        # 创建优化问题
-        prob = pulp.LpProblem("WindFarm_Optimization", pulp.LpMaximize)
-
-        # 决策变量：每个点位是否被选中
-        x = pulp.LpVariable.dicts("x", valid_df.index.tolist(), cat='Binary')
-
-        # 目标函数：最大化风能产出 - 成本
-        energy_terms = []
-        cost_terms = []
-
-        for idx in valid_df.index:
-            energy_terms.append(valid_df.loc[idx, "wind_power_density"] * 10 * x[idx])
-            cost_terms.append(cost_weight * valid_df.loc[idx, "cost"] * x[idx])
-
-        # 添加约束惩罚项
-        penalty_terms = []
-
-        # 坡度约束惩罚
-        if 'slope' in valid_df.columns:
-            for idx in valid_df.index:
-                if valid_df.loc[idx, "slope"] > max_slope:
-                    penalty_terms.append(-1000 * x[idx])
-
-        # 道路距离约束惩罚
-        if 'road_distance' in valid_df.columns:
-            for idx in valid_df.index:
-                if valid_df.loc[idx, "road_distance"] > max_road_distance:
-                    penalty_terms.append(-1000 * x[idx])
-
-        # 居民区距离约束惩罚
-        if 'residential_distance' in valid_df.columns:
-            for idx in valid_df.index:
-                if valid_df.loc[idx, "residential_distance"] < min_residential_distance:
-                    penalty_terms.append(-1000 * x[idx])
-
-        # 文化遗产距离约束惩罚
-        if 'heritage_distance' in valid_df.columns:
-            for idx in valid_df.index:
-                if valid_df.loc[idx, "heritage_distance"] < min_heritage_distance:
-                    penalty_terms.append(-1000 * x[idx])
-
-        # 地质距离约束惩罚
-        if 'geology_distance' in valid_df.columns:
-            for idx in valid_df.index:
-                if valid_df.loc[idx, "geology_distance"] < min_geology_distance:
-                    penalty_terms.append(-1000 * x[idx])
-
-        # 水源距离约束惩罚
-        if 'water_distance' in valid_df.columns:
-            for idx in valid_df.index:
-                if valid_df.loc[idx, "water_distance"] < min_water_distance:
-                    penalty_terms.append(-1000 * x[idx])
-
-        # 电网接近度奖励
-        reward_terms = []
-        if 'grid_proximity' in valid_df.columns:
-            for idx in valid_df.index:
-                reward_terms.append(valid_df.loc[idx, "grid_proximity"] * 100 * x[idx])
-
-        # 间距约束 - 添加惩罚项
-        spacing_penalty_terms = []
-        # 由于PuLP中完整实现间距约束很复杂，这里使用简化版本
-        # 在实际应用中，可以通过添加两两点对之间的约束来实现完整间距约束
-
-        # 设置目标函数
-        prob += (pulp.lpSum(energy_terms) - pulp.lpSum(cost_terms) +
-                 pulp.lpSum(reward_terms) + pulp.lpSum(penalty_terms) + pulp.lpSum(spacing_penalty_terms))
-
-        # 约束条件：选择n_turbines个点位
-        prob += pulp.lpSum([x[idx] for idx in valid_df.index]) == n_turbines
-
-        # 设置求解器
-        if solver_type == 'CBC':
-            solver = pulp.PULP_CBC_CMD(timeLimit=time_limit, msg=0)
-        elif solver_type == 'GLPK':
-            solver = pulp.GLPK_CMD(timeLimit=time_limit, msg=0)
-        elif solver_type == 'CPLEX':
-            solver = pulp.CPLEX_CMD(timeLimit=time_limit, msg=0)
-        else:
-            solver = pulp.PULP_CBC_CMD(timeLimit=time_limit, msg=0)
-
-        # 求解问题
-        prob.solve(solver)
-
-        # 提取结果
-        if pulp.LpStatus[prob.status] == 'Optimal':
-            selected_points = [idx for idx in valid_df.index if pulp.value(x[idx]) == 1]
-            fitness = pulp.value(prob.objective)
-
-            # 计算实际间距
-            min_spacing_achieved = calculate_min_spacing(df, selected_points)
-
-            return {
-                "algorithm": "PuLP优化求解器",
-                "solution": selected_points,
-                "fitness": fitness,
-                "convergence_history": [fitness],
-                "min_spacing_km": min_spacing_achieved
-            }
-        else:
-            return {"algorithm": "PuLP优化求解器", "solution": [], "fitness": -1, "convergence_history": [],
-                    "min_spacing_km": 0}
-
-    except Exception as e:
-        print(f"PuLP求解器错误: {e}")
-        return {"algorithm": "PuLP优化求解器", "solution": [], "fitness": -1, "convergence_history": [],
-                "min_spacing_km": 0}
-
-
-# ===================== 约束条件更新函数 =====================
-def update_validity_with_constraints(df, max_slope, max_road_distance, min_residential_distance,
-                                     min_heritage_distance, min_geology_distance, min_water_distance):
-    """根据新的约束条件更新有效点位"""
-    df_updated = df.copy()
-
-    # 使用新的连续字段进行约束检查
-    slope_valid = (df_updated["slope"] <= max_slope)
-    road_valid = (df_updated["road_distance"] <= max_road_distance)
-    residential_valid = (df_updated["residential_distance"] >= min_residential_distance)
-    heritage_valid = (df_updated["heritage_distance"] >= min_heritage_distance)
-    geology_valid = (df_updated["geology_distance"] >= min_geology_distance)
-    water_valid = (df_updated["water_distance"] >= min_water_distance)
-
-    # 风速约束
-    wind_valid = (df_updated["predicted_wind_speed"] >= 5.0)
-
-    # 电网接近度约束
-    grid_valid = (df_updated["grid_proximity"] >= 0.1)
-
-    # 综合所有约束条件
-    df_updated["valid"] = (
-            slope_valid & road_valid & residential_valid &
-            heritage_valid & geology_valid & water_valid &
-            wind_valid & grid_valid
-    )
-
-    return df_updated
-
-
-# ===================== 总入口 =====================
-def optimize(df, algo, n_turbines, cost_weight,
-             max_slope, max_road_distance, min_residential_distance,
-             min_heritage_distance, min_geology_distance, min_water_distance, **kwargs):
-    """优化函数总入口"""
-    # 设置默认风机间距为0.8km（不在前端显示）
-    min_spacing = 0.8  # 默认风机间距0.8公里
-
-    # 首先根据新的约束条件更新 df 中的 valid 列
-    df = update_validity_with_constraints(
-        df, max_slope, max_road_distance, min_residential_distance,
-        min_heritage_distance, min_geology_distance, min_water_distance
-    )
-
-    # 合并参数，包含默认间距
-    all_params = {
-        'min_spacing': min_spacing,
-        **kwargs
-    }
-
-    if algo == "遗传算法":
-        return run_genetic_algorithm(df, n_turbines, cost_weight,
-                                     max_slope, max_road_distance, min_residential_distance,
-                                     min_heritage_distance, min_geology_distance, min_water_distance,
-                                     **all_params)
-    elif algo == "模拟退火算法":
-        return run_simulated_annealing(df, n_turbines, cost_weight,
-                                       max_slope, max_road_distance, min_residential_distance,
-                                       min_heritage_distance, min_geology_distance, min_water_distance,
-                                       **all_params)
-    elif algo == "粒子群优化算法":
-        return run_pso(df, n_turbines, cost_weight,
-                       max_slope, max_road_distance, min_residential_distance,
-                       min_heritage_distance, min_geology_distance, min_water_distance,
-                       **all_params)
-    elif algo == "PuLP优化求解器":
-        return run_pulp_optimizer(df, n_turbines, cost_weight,
-                                  max_slope, max_road_distance, min_residential_distance,
-                                  min_heritage_distance, min_geology_distance, min_water_distance,
-                                  **all_params)
+import pandas as pd
+import plotly.graph_objects as go
+from shapely.geometry import Point
+from src.utils.create_map import create_fengjie_base_map
+
+# 显示优化结果 - 数据分析部分
+def display_optimization_result(result, df):
+    st.subheader(f"最优风机布局与算法收敛分析（{result['algorithm']}）")
+
+    sol = result["solution"]
+    if not sol:
+        st.error("没有找到有效的解决方案")
+        return
+
+    turbines = df.loc[sol].copy().reset_index(drop=True)
+    turbines["turbine_id"] = [f"T{i + 1}" for i in range(len(turbines))]
+
+    base_map = create_fengjie_base_map()
+    if base_map:
+        turbines_fengjie = turbines[
+            turbines.apply(lambda row: Point(row["lon"], row["lat"]).within(base_map['geometry']), axis=1)
+        ]
     else:
-        # 两者对比（遗传算法 vs 模拟退火算法）
-        ga = run_genetic_algorithm(df, n_turbines, cost_weight,
-                                   max_slope, max_road_distance, min_residential_distance,
-                                   min_heritage_distance, min_geology_distance, min_water_distance,
-                                   **all_params)
-        sa = run_simulated_annealing(df, n_turbines, cost_weight,
-                                     max_slope, max_road_distance, min_residential_distance,
-                                     min_heritage_distance, min_geology_distance, min_water_distance,
-                                     **all_params)
-        return ga if ga["fitness"] > sa["fitness"] else sa
+        turbines_fengjie = turbines
+
+    if not turbines_fengjie.empty:
+        power_results = calculate_power_generation_corrected(turbines_fengjie)
+    else:
+        power_results = None
+
+    st.markdown("#### 算法收敛过程")
+    fitness_history = result.get("fitness_history") or result.get("convergence_history") or []
+    if fitness_history:
+        fitness_smooth = pd.Series(fitness_history).rolling(5, min_periods=1).mean()
+        fig_conv = go.Figure()
+        fig_conv.add_trace(go.Scatter(
+            y=fitness_history,
+            mode="lines",
+            name="原始适应度",
+            line=dict(color='lightblue', width=1)
+        ))
+        fig_conv.add_trace(go.Scatter(
+            y=fitness_smooth,
+            mode="lines",
+            name="平滑趋势",
+            line=dict(color="crimson", width=3)
+        ))
+        fig_conv.update_layout(
+            height=400,
+            template="plotly_white",
+            title="算法收敛曲线",
+            xaxis_title="迭代次数",
+            yaxis_title="适应度值"
+        )
+        st.plotly_chart(fig_conv, use_container_width=True, key="convergence_chart")
+
+    st.markdown("#### 优化结果与发电量分析")
+
+    if power_results and not turbines_fengjie.empty:
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("总装机容量", f"{power_results['total_capacity_mw']:.1f} MW")
+        with col2:
+            st.metric("年发电量", f"{power_results['total_annual_generation_gwh']:.1f} GWh")
+        with col3:
+            st.metric("平均容量因数", f"{power_results['average_capacity_factor']:.1%}")
+        with col4:
+            st.metric("等效满发小时", f"{power_results['equivalent_full_load_hours']:.0f} h")
+
+        st.markdown("#### 经济效益估算")
+
+        electricity_price = 0.4
+        investment_per_kw = 6000
+        om_cost_per_kw = 150
+
+        total_investment = power_results['total_capacity_kw'] * investment_per_kw / 1e8
+        annual_revenue = power_results['total_annual_generation_kwh'] * electricity_price / 1e8
+        annual_om_cost = power_results['total_capacity_kw'] * om_cost_per_kw / 1e8
+        annual_profit = annual_revenue - annual_om_cost
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("总投资", f"{total_investment:.2f} 亿元")
+        with col2:
+            st.metric("年发电收入", f"{annual_revenue:.2f} 亿元")
+        with col3:
+            st.metric("年运维成本", f"{annual_om_cost:.2f} 亿元")
+        with col4:
+            profit_color = "normal" if annual_profit >= 0 else "inverse"
+            st.metric("年净利润", f"{annual_profit:.2f} 亿元", delta_color=profit_color)
+
+        if annual_profit > 0:
+            payback_period = total_investment / annual_profit
+            st.metric("投资回收期", f"{payback_period:.1f} 年")
+        else:
+            st.metric("投资回收期", "无法回收", delta="亏损运营", delta_color="inverse")
+
+        st.markdown("#### 发电量分布分析")
+        col1, col2 = st.columns(2)
+        with col1:
+            if power_results['capacity_factors']:
+                fig_cf = go.Figure()
+                fig_cf.add_trace(go.Histogram(
+                    x=power_results['capacity_factors'],
+                    nbinsx=20,
+                    name="容量因数分布"
+                ))
+                fig_cf.update_layout(
+                    title="风机容量因数分布",
+                    xaxis_title="容量因数",
+                    yaxis_title="风机数量",
+                    template="plotly_white"
+                )
+                st.plotly_chart(fig_cf, use_container_width=True, key="capacity_factor_histogram")
+
+        with col2:
+            if power_results['annual_generation_per_turbine']:
+                fig_wind = go.Figure()
+                fig_wind.add_trace(go.Scatter(
+                    x=turbines_fengjie["predicted_wind_speed"],
+                    y=[gen / 1e6 for gen in power_results['annual_generation_per_turbine']],
+                    mode='markers',
+                    marker=dict(
+                        size=8,
+                        color=power_results['capacity_factors'],
+                        colorscale='Viridis',
+                        showscale=True,
+                        colorbar=dict(title="容量因数")
+                    ),
+                    text=[f"T{i + 1}" for i in range(len(turbines_fengjie))],
+                    name="风机"
+                ))
+                fig_wind.update_layout(
+                    title="风速与年发电量关系",
+                    xaxis_title="风速 (m/s)",
+                    yaxis_title="年发电量 (GWh)",
+                    template="plotly_white"
+                )
+                st.plotly_chart(fig_wind, use_container_width=True, key="wind_generation_scatter")
+
+    else:
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("最优适应度值", f"{result['fitness']:.0f}")
+        with col2:
+            st.metric("风机数量", len(turbines_fengjie))
+        with col3:
+            if len(turbines_fengjie) > 0:
+                avg_wind_speed = turbines_fengjie["predicted_wind_speed"].mean()
+                st.metric("平均风速", f"{avg_wind_speed:.1f} m/s")
+        with col4:
+            if len(turbines_fengjie) > 0:
+                power_data = {
+                    "指标": ["总功率密度", "平均功率密度", "最大功率密度", "最小功率密度"],
+                    "数值(W/m²)": [
+                        f"{turbines_fengjie['wind_power_density'].sum():.0f}",
+                        f"{turbines_fengjie['wind_power_density'].mean():.0f}",
+                        f"{turbines_fengjie['wind_power_density'].max():.0f}",
+                        f"{turbines_fengjie['wind_power_density'].min():.0f}"
+                    ]
+                }
+                power_df = pd.DataFrame(power_data)
+                st.dataframe(power_df, hide_index=True, use_container_width=True, key="power_density_table")
+
+    st.markdown("#### 风机详细信息")
+    if not turbines_fengjie.empty:
+        display_df = turbines_fengjie[
+            ["turbine_id", "latitude", "lon", "predicted_wind_speed", "wind_power_density", "cost"]].copy()
+        display_df["latitude"] = display_df["latitude"].round(4)
+        display_df["lon"] = display_df["lon"].round(4)
+        display_df["predicted_wind_speed"] = display_df["predicted_wind_speed"].round(2)
+        display_df["wind_power_density"] = display_df["wind_power_density"].round(0)
+        display_df["cost"] = display_df["cost"].round(0)
+
+        if power_results and len(power_results['annual_generation_per_turbine']) == len(turbines_fengjie):
+            display_df["年发电量(GWh)"] = [f"{x / 1e6:.2f}" for x in power_results['annual_generation_per_turbine']]
+            display_df["容量因数"] = [f"{x:.1%}" for x in power_results['capacity_factors']]
+
+        st.dataframe(display_df, use_container_width=True, key="turbine_details_table")
+
+        if power_results:
+            st.markdown("#### 风机配置说明")
+            config = power_results['turbine_config']
+            st.write(f"""
+            - 风机型号: {config['model']}
+            - 单机容量: {config['rated_power'] / 1000} MW
+            - 风轮直径: {config['rotor_diameter']} 米
+            - 轮毂高度: {config['hub_height']} 米
+            - 工作风速: {config['cut_in_speed']}-{config['rated_speed']}-{config['cut_out_speed']} m/s
+            - 综合效率: {config['efficiency']:.0%}（考虑尾流、可用率等损失）
+            - 计算方法: 基于威布尔分布和典型功率曲线
+            """)
+    else:
+        st.info("没有在奉节县范围内找到有效的风机位置")
+
+# 数据质量检查函数
+def check_data_quality_for_power_calculation(turbines_df):
+    if turbines_df.empty:
+        return
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        wind_speeds = turbines_df["predicted_wind_speed"]
+        avg_wind_speed = wind_speeds.mean()
+        st.metric("平均风速", f"{avg_wind_speed:.1f} m/s")
+        if avg_wind_speed < 5.0:
+            st.error("风速偏低")
+        elif avg_wind_speed > 12.0:
+            st.warning("风速偏高")
+
+    with col2:
+        wind_std = wind_speeds.std()
+        st.metric("风速标准差", f"{wind_std:.1f} m/s")
+        if wind_std < 0.5:
+            st.warning("风速变化较小")
+
+    with col3:
+        valid_ratio = (wind_speeds >= 3.0).mean() * 100
+        st.metric("有效风速比例", f"{valid_ratio:.1f}%")
+        if valid_ratio < 80:
+            st.warning("部分点位风速过低")
+
+# 修正的发电量计算模块
+def calculate_power_generation_corrected(turbines_df):
+    TURBINE_CONFIG = {
+        'model': '金风科技 GW-140/2500',
+        'rated_power': 2500,
+        'rotor_diameter': 140,
+        'hub_height': 90,
+        'cut_in_speed': 3.0,
+        'rated_speed': 11.0,
+        'cut_out_speed': 25.0,
+        'efficiency': 0.92,
+        'availability': 0.98,
+        'array_efficiency': 0.92,
+    }
+
+    def detailed_power_curve(wind_speed):
+        if wind_speed < TURBINE_CONFIG['cut_in_speed']:
+            return 0
+        elif wind_speed < TURBINE_CONFIG['rated_speed']:
+            normalized_speed = (wind_speed - TURBINE_CONFIG['cut_in_speed']) / \
+                               (TURBINE_CONFIG['rated_speed'] - TURBINE_CONFIG['cut_in_speed'])
+            return TURBINE_CONFIG['rated_power'] * (normalized_speed ** 3)
+        elif wind_speed <= TURBINE_CONFIG['cut_out_speed']:
+            return TURBINE_CONFIG['rated_power']
+        else:
+            return 0
+
+    def weibull_wind_distribution(avg_wind_speed, k=2.0, points=12):
+        from scipy.special import gamma
+
+        c = avg_wind_speed / gamma(1 + 1 / k)
+
+        wind_bins = np.linspace(0.5, 25.5, points + 1)
+        wind_speeds = (wind_bins[:-1] + wind_bins[1:]) / 2
+        wind_speeds = np.clip(wind_speeds, 0, 25)
+
+        frequencies = (weibull_cdf(wind_bins[1:], c, k) -
+                       weibull_cdf(wind_bins[:-1], c, k))
+        frequencies = frequencies / frequencies.sum()
+
+        return wind_speeds, frequencies
+
+    def weibull_cdf(x, c, k):
+        return 1 - np.exp(-(x / c) ** k)
+
+    annual_generation_per_turbine = []
+    capacity_factors = []
+
+    for _, turbine in turbines_df.iterrows():
+        avg_wind_speed = turbine['predicted_wind_speed']
+
+        try:
+            from scipy.special import gamma
+            wind_speeds, frequencies = weibull_wind_distribution(avg_wind_speed)
+        except ImportError:
+            st.warning("scipy未安装，使用简化发电量计算")
+            theoretical_power = detailed_power_curve(avg_wind_speed)
+            actual_power = (theoretical_power *
+                            TURBINE_CONFIG['efficiency'] *
+                            TURBINE_CONFIG['availability'] *
+                            TURBINE_CONFIG['array_efficiency'])
+            annual_energy = actual_power * 8760
+        else:
+            annual_energy = 0
+            for speed, freq in zip(wind_speeds, frequencies):
+                power_output = detailed_power_curve(speed)
+                actual_power = (power_output *
+                                TURBINE_CONFIG['efficiency'] *
+                                TURBINE_CONFIG['availability'] *
+                                TURBINE_CONFIG['array_efficiency'])
+                annual_energy += actual_power * 8760 * freq
+
+        annual_generation_per_turbine.append(annual_energy)
+
+        capacity_factor = annual_energy / (TURBINE_CONFIG['rated_power'] * 8760)
+        capacity_factors.append(capacity_factor)
+
+    total_annual_generation = sum(annual_generation_per_turbine)
+    avg_capacity_factor = np.mean(capacity_factors)
+    total_capacity = len(turbines_df) * TURBINE_CONFIG['rated_power']
+    equivalent_full_load_hours = total_annual_generation / total_capacity
+
+    return {
+        'total_annual_generation_kwh': total_annual_generation,
+        'total_annual_generation_mwh': total_annual_generation / 1000,
+        'total_annual_generation_gwh': total_annual_generation / 1e6,
+        'total_capacity_kw': total_capacity,
+        'total_capacity_mw': total_capacity / 1000,
+        'average_capacity_factor': avg_capacity_factor,
+        'equivalent_full_load_hours': equivalent_full_load_hours,
+        'turbine_count': len(turbines_df),
+        'annual_generation_per_turbine': annual_generation_per_turbine,
+        'capacity_factors': capacity_factors,
+        'turbine_config': TURBINE_CONFIG
+    }
+
+# 简化版发电量计算（备用）
+def calculate_power_generation_simple(turbines_df):
+    TURBINE_CONFIG = {
+        'model': '金风科技 GW-140/2500',
+        'rated_power': 2500,
+        'cut_in_speed': 3.0,
+        'rated_speed': 11.0,
+        'cut_out_speed': 25.0,
+        'overall_efficiency': 0.35,
+    }
+
+    def power_curve(wind_speed):
+        if wind_speed < TURBINE_CONFIG['cut_in_speed']:
+            return 0
+        elif wind_speed < TURBINE_CONFIG['rated_speed']:
+            return TURBINE_CONFIG['rated_power'] * (
+                    (wind_speed - TURBINE_CONFIG['cut_in_speed']) /
+                    (TURBINE_CONFIG['rated_speed'] - TURBINE_CONFIG['cut_in_speed'])
+            ) ** 3
+        elif wind_speed <= TURBINE_CONFIG['cut_out_speed']:
+            return TURBINE_CONFIG['rated_power']
+        else:
+            return 0
+
+    annual_generation_per_turbine = []
+    capacity_factors = []
+
+    for _, turbine in turbines_df.iterrows():
+        wind_speed = turbine['predicted_wind_speed']
+        power_output = power_curve(wind_speed)
+        annual_energy = power_output * 8760 * TURBINE_CONFIG['overall_efficiency']
+
+        annual_generation_per_turbine.append(annual_energy)
+        capacity_factor = annual_energy / (TURBINE_CONFIG['rated_power'] * 8760)
+        capacity_factors.append(capacity_factor)
+
+    total_annual_generation = sum(annual_generation_per_turbine)
+    total_capacity = len(turbines_df) * TURBINE_CONFIG['rated_power']
+
+    return {
+        'total_annual_generation_kwh': total_annual_generation,
+        'total_annual_generation_gwh': total_annual_generation / 1e6,
+        'total_capacity_mw': total_capacity / 1000,
+        'average_capacity_factor': np.mean(capacity_factors),
+        'equivalent_full_load_hours': total_annual_generation / total_capacity,
+        'annual_generation_per_turbine': annual_generation_per_turbine,
+        'capacity_factors': capacity_factors,
+        'turbine_config': TURBINE_CONFIG
+    }
+
+# 保留原始函数（兼容性）
+def calculate_power_generation(turbines_df):
+    try:
+        return calculate_power_generation_corrected(turbines_df)
+    except Exception as e:
+        st.warning(f"使用简化发电量计算: {e}")
+        return calculate_power_generation_simple(turbines_df)

@@ -1,3 +1,4 @@
+import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
 import geopandas as gpd
@@ -303,21 +304,57 @@ def display_optimization_map(result, df, height=600):
         key="optimization_map_style"
     )
 
-    sol = result["solution"]
-    if not sol:
-        st.error("❌ 没有找到有效的解决方案")
-        return
-
-    # 数据预处理
+    # 🔧 修复：兼容不同的结果格式
     try:
+        # 尝试不同的键名来获取解决方案
+        if "solution" in result:
+            sol = result["solution"]
+        elif "best_positions" in result:
+            sol = result["best_positions"]
+        elif "positions" in result:
+            sol = result["positions"]
+        elif "selected_indices" in result:
+            sol = result["selected_indices"]
+        else:
+            # 如果没有明确的解决方案键，尝试使用第一个可迭代的值
+            for key, value in result.items():
+                if isinstance(value, (list, np.ndarray)) and len(value) > 0:
+                    sol = value
+                    break
+            else:
+                st.error("❌ 无法找到有效的解决方案数据")
+                return
+
+        if not sol:
+            st.error("❌ 没有找到有效的解决方案")
+            return
+
+        # 数据预处理
         df_processed = df.copy()
-        turbines = df_processed.loc[sol].copy().reset_index(drop=True)
+
+        # 确保 sol 是有效的索引列表
+        if isinstance(sol, (list, np.ndarray)):
+            # 过滤掉超出数据范围的索引
+            valid_indices = [idx for idx in sol if idx in df_processed.index]
+            if not valid_indices:
+                st.error("❌ 没有找到有效的风机位置索引")
+                return
+
+            turbines = df_processed.loc[valid_indices].copy().reset_index(drop=True)
+        else:
+            st.error(f"❌ 解决方案格式不正确: {type(sol)}")
+            return
+
         turbines["turbine_id"] = [f"T{i + 1}" for i in range(len(turbines))]
 
         # 保留奉节县内风机
         turbines_fengjie = turbines[
             turbines.apply(lambda row: Point(row["lon"], row["lat"]).within(base_map['geometry']), axis=1)
         ]
+
+        if turbines_fengjie.empty:
+            st.warning("⚠️ 优化结果中没有在奉节县范围内的风机位置")
+            return
 
         fig = go.Figure()
 
@@ -367,7 +404,7 @@ def display_optimization_map(result, df, height=600):
                 name="数据背景",
                 showscale=True,
                 hovertemplate=f'背景{data_column}: %{{z:.1f}}',
-                colorbar=dict(title=data_column)  # 修复：移除 titleside
+                colorbar=dict(title=data_column)
             ))
 
         # 添加优化后的风机位置
@@ -446,3 +483,8 @@ def display_optimization_map(result, df, height=600):
 
     except Exception as e:
         st.error(f"优化结果显示错误: {str(e)}")
+        # 显示调试信息
+        with st.expander("🔍 调试信息"):
+            st.write("结果字典的键:", list(result.keys()))
+            st.write("结果类型:", type(result))
+            st.write("错误详情:", str(e))
