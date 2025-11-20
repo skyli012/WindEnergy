@@ -19,8 +19,6 @@ def display_optimization_result(result, df):
         # 使用优化算法计算的真实发电量结果
         power_results = result.get('power_results')
 
-        st.success("✅ 使用真实优化计算结果")
-
     else:
         # 回退到原来的方式（兼容性）
         st.warning("⚠️ 使用兼容模式，可能不是最优结果")
@@ -327,11 +325,6 @@ def display_optimization_result(result, df):
     # 显示计算时间
     if 'computation_time' in result:
         st.info(f"🕒 计算耗时: {result['computation_time']:.2f} 秒")
-
-
-# 删除 filter_valid_turbines 函数，因为不再需要过滤
-
-# 删除 display_constraint_violations 函数，因为不再显示约束违反
 
 def calculate_real_power_generation(turbines_df):
     """基于真实风速数据计算发电量"""
