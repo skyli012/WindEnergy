@@ -5,12 +5,9 @@ import numpy as np
 from shapely.geometry import Point
 
 from src.optimization.algorithm_convergence_curve import call_optimize_function
-from src.prediction.ai_prediction import calculate_metrics
 from src.utils.check_data import check_data_quality
-from src.utils.create_map import display_fengjie_standalone_map, display_environment, display_optimization_map, \
-    create_fengjie_base_map
-from src.visualization.energy_storage_scheduler import calculate_wind_power_from_speed, EnergyStorageScheduler, \
-    create_single_turbine_assessment, create_wind_farm_assessment
+from src.utils.create_map import display_maale_gilboa_standalone_map, display_environment, display_optimization_map, \
+    create_maale_gilboa_base_map
 from src.visualization.opt_result_show import display_optimization_result
 
 
@@ -20,11 +17,17 @@ from src.visualization.opt_result_show import display_optimization_result
 def strategy_optimization_page():
     # 页面标题 - 更紧凑
     st.markdown("### 🌬️ 风电场选址优化与储能调度系统")
-    st.caption("基于真实优化算法计算 · 奉节县风机布局优化 · 储能消纳策略分析")
+    st.caption("基于真实优化算法计算 · 奉节县风电场布局优化 · 储能消纳策略分析")
 
     # 初始化 session state
     if 'current_page' not in st.session_state:
         st.session_state.current_page = "map"
+
+    # 初始化风场数量
+    if 'n_farms' not in st.session_state:
+        st.session_state.n_farms = 2
+    if 'n_turbines_per_farm' not in st.session_state:
+        st.session_state.n_turbines_per_farm = 4
 
     # ========== 地图在左边，控制面板在右边 ==========
     map_col, control_col = st.columns([2, 1])
@@ -32,7 +35,7 @@ def strategy_optimization_page():
     with map_col:
         # 显示地图内容
         if st.session_state.current_page == "map":
-            display_fengjie_standalone_map()
+            display_maale_gilboa_standalone_map()
             if "windfarm_data" not in st.session_state:
                 st.info("📁 请先上传风速预测数据以查看风能分布")
 
@@ -40,7 +43,7 @@ def strategy_optimization_page():
             if "windfarm_data" in st.session_state:
                 display_environment(st.session_state["windfarm_data"])
                 if "optimization_result" not in st.session_state:
-                    st.info("⚙️ 数据已就绪，可点击'开始优化'进行布局优化")
+                    st.info("⚙️ 数据已就绪，可点击'开始优化'进行风电场布局优化")
             else:
                 st.warning("⚠️ 请先上传数据文件")
                 st.session_state.current_page = "map"
@@ -48,7 +51,7 @@ def strategy_optimization_page():
 
         elif st.session_state.current_page == "result":
             if "windfarm_data" in st.session_state and "optimization_result" in st.session_state:
-                # 在左侧地图上显示优化结果（风机位置）
+                # 在左侧地图上显示优化结果（多个风电场位置）
                 display_optimization_map(
                     st.session_state["optimization_result"],
                     st.session_state["windfarm_data"]
@@ -61,35 +64,84 @@ def strategy_optimization_page():
     with control_col:
         st.markdown("#### ⚙️ 控制面板")
 
-        # 算法选择单独一行
-        algo = st.selectbox("优化算法",
-                            ["遗传算法", "模拟退火算法", "粒子群优化算法", "PuLP优化求解器"],
-                            help="选择优化算法")
-
-        # 基础参数设置 - 独立显示
+        # 基础参数设置 - 增加风场数量选择
         st.markdown("**🎯 基础参数设置**")
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
-            n_turbines = st.slider("风机数量", 1, 15, 5, help="选择要安装的风机数量")
+            # 修改这里：使用 st.session_state 来保存和读取风场数量
+            n_farms = st.slider("风场数量", 1, 5, st.session_state.n_farms, help="选择要建设的风电场数量")
+            # 保存到 session state
+            st.session_state.n_farms = n_farms
+
         with col2:
-            cost_weight = st.slider("成本权重", 0.1, 2.0, 1.0, 0.1, help="成本在优化中的重要性，值越大成本影响越大")
+            # 同样修改单场风机数
+            n_turbines = st.slider("单场风机数", 1, 10, st.session_state.n_turbines_per_farm,
+                                   help="每个风电场安装的风机数量")
+            st.session_state.n_turbines_per_farm = n_turbines
+
+        with col3:
+            cost_weight = st.slider("成本权重", 0.1, 2.0, 1.0, 0.1, help="成本在优化中的重要性")
+
+        # 计算总风机数量
+        total_turbines = n_farms * n_turbines
+
+        # 根据风场数量设置合理的固定间距
+        if n_farms == 1:
+            min_farm_distance = 0  # 单个风场不需要间距约束
+        elif n_farms == 2:
+            min_farm_distance = 3.0  # 2个风场，3km间距
+        elif n_farms == 3:
+            min_farm_distance = 2.5  # 3个风场，2.5km间距
+        elif n_farms == 4:
+            min_farm_distance = 2.0  # 4个风场，2km间距
+        else:  # n_farms == 5
+            min_farm_distance = 1.5  # 5个风场，1.5km间距
+
+        # 风机参数
+        TURBINE_DIAMETER = 140  # 米（金风科技 GW-140/2500 风机直径）
+
+        # 设置合理的固定间距值
+        DOWNWIND_DISTANCE_RATIO = 8.0  # 主风向间距 8倍D
+        CROSSWIND_DISTANCE_RATIO = 4.0  # 侧向间距 4倍D
+
+        # 计算实际间距
+        min_downwind_distance = DOWNWIND_DISTANCE_RATIO * TURBINE_DIAMETER  # 米
+        min_crosswind_distance = CROSSWIND_DISTANCE_RATIO * TURBINE_DIAMETER  # 米
+
 
         # 储能系统参数
         st.markdown("**🔋 储能系统参数**")
-        col3, col4 = st.columns(2)
-        with col3:
-            storage_capacity = st.slider("储能容量 (MWh)", 1, 50, 10, help="储能系统总容量")
-        with col4:
-            max_power = st.slider("最大功率 (MW)", 1, 20, 5, help="储能系统最大充放电功率")
+        col6, col7, col8 = st.columns(3)
+        with col6:
+            # 根据风场数量动态调整储能容量
+            base_storage = 40
+            storage_per_farm = 20
+            recommended_storage = base_storage + (n_farms - 1) * storage_per_farm
+            storage_capacity = st.slider("储能容量 (MWh)", 1, 200, recommended_storage,
+                                         help=f"推荐值: {recommended_storage}MWh ({n_farms}个风场)")
+        with col7:
+            base_power = 30
+            power_per_farm = 15
+            recommended_power = base_power + (n_farms - 1) * power_per_farm
+            max_power = st.slider("最大功率 (MW)", 1, 80, recommended_power,
+                                  help=f"推荐值: {recommended_power}MW ({n_farms}个风场)")
+        with col8:
+            base_grid = 50
+            grid_per_farm = 25
+            recommended_grid = base_grid + (n_farms - 1) * grid_per_farm
+            grid_capacity = st.slider("电网容量 (MW)", 10, 150, 50,
+                                      help=f"推荐值: {recommended_grid}MW ({n_farms}个风场)")
 
-        # 调度策略选择
-        strategy = st.selectbox("储能调度策略",
-                                ["出力平滑", "弃风消减", "混合策略"],
-                                help="选择储能系统运行策略")
+        # 功率变化率参数
+        st.markdown("**📊 运行参数**")
+        max_ramp_rate = st.slider("最大功率变化率 (MW/min)", 1, 30, 5 + n_farms,
+                                  help="多风场运行时需要更高的变化率容限")
 
-        # 固定约束条件值
+        # 固定约束条件值 - 使用合理的固定风场间距和风机间距
         algorithm_params = {
-            'n_turbines': n_turbines,
+            'n_farms': n_farms,
+            'n_turbines_per_farm': n_turbines,
+            'total_turbines': total_turbines,
             'cost_weight': cost_weight,
             'max_slope': 35,
             'max_road_distance': 100,
@@ -97,10 +149,20 @@ def strategy_optimization_page():
             'min_heritage_distance': 70,
             'min_geology_distance': 80,
             'min_water_distance': 100,
+            'min_farm_distance': min_farm_distance * 1000,  # 转换为米
+            'min_downwind_distance': min_downwind_distance,  # 主风向间距
+            'min_crosswind_distance': min_crosswind_distance,  # 侧向间距
+            'turbine_diameter': TURBINE_DIAMETER,  # 风机直径
             'storage_capacity': storage_capacity * 1000,  # 转换为kWh
             'max_power': max_power * 1000,  # 转换为kW
-            'strategy': strategy
+            'grid_capacity': grid_capacity * 1000,  # 转换为kW
+            'max_ramp_rate': max_ramp_rate,
         }
+
+        # 算法选择单独一行
+        algo = st.selectbox("优化算法",
+                            ["遗传算法", "模拟退火算法", "粒子群优化算法", "PuLP优化求解器"],
+                            help="选择优化算法")
 
         # 算法高级参数（可选）
         st.markdown("**🔧 算法高级参数（可选）**")
@@ -108,51 +170,48 @@ def strategy_optimization_page():
             if algo == "遗传算法":
                 col11, col12 = st.columns(2)
                 with col11:
-                    algorithm_params['pop_size'] = st.slider("种群大小", 20, 200, 50,
-                                                             help="种群越大，搜索能力越强，但计算越慢")
+                    # 根据问题复杂度调整种群大小
+                    base_pop_size = 50
+                    pop_size_multiplier = n_farms * 2
+                    recommended_pop = base_pop_size + pop_size_multiplier * 10
+                    algorithm_params['pop_size'] = st.slider("种群大小", 20, 300, recommended_pop,
+                                                             help=f"推荐值: {recommended_pop} (适应{n_farms}个风场)")
                 with col12:
-                    algorithm_params['generations'] = st.slider("迭代代数", 50, 500, 100,
-                                                                help="迭代次数越多，结果可能越好，但计算时间越长")
+                    algorithm_params['generations'] = st.slider("迭代代数", 50, 500, 100 + n_farms * 20,
+                                                                help="多风场问题需要更多迭代")
 
                 col13, col14 = st.columns(2)
                 with col13:
-                    algorithm_params['mutation_rate'] = st.slider("变异率", 0.01, 0.3, 0.1, 0.01,
-                                                                  help="变异率太高会破坏好解，太低会早熟收敛")
+                    algorithm_params['mutation_rate'] = st.slider("变异率", 0.01, 0.3, 0.1, 0.01)
                 with col14:
-                    algorithm_params['crossover_rate'] = st.slider("交叉率", 0.5, 1.0, 0.8, 0.05,
-                                                                   help="控制个体间交换信息的概率")
+                    algorithm_params['crossover_rate'] = st.slider("交叉率", 0.5, 1.0, 0.8, 0.05)
 
             elif algo == "模拟退火算法":
                 col15, col16, col17 = st.columns(3)
                 with col15:
-                    algorithm_params['initial_temp'] = st.slider("初始温度", 100, 5000, 1000, 100,
-                                                                 help="温度越高，接受差解的概率越大")
+                    algorithm_params['initial_temp'] = st.slider("初始温度", 100, 5000, 1000 + n_farms * 200, 100)
                 with col16:
-                    algorithm_params['cooling_rate'] = st.slider("降温速率", 0.85, 0.99, 0.95, 0.01,
-                                                                 help="降温越慢，找到全局最优的概率越大")
+                    algorithm_params['cooling_rate'] = st.slider("降温速率", 0.85, 0.99, 0.95, 0.01)
                 with col17:
-                    algorithm_params['iterations_per_temp'] = st.slider("每温度迭代次数", 10, 200, 50,
-                                                                        help="在每个温度下的搜索次数")
+                    algorithm_params['iterations_per_temp'] = st.slider("每温度迭代次数", 10, 200, 50 + n_farms * 10)
 
             elif algo == "粒子群优化算法":
                 col18, col19 = st.columns(2)
                 with col18:
-                    algorithm_params['pop_size'] = st.slider("粒子数量", 20, 100, 30,
-                                                             help="粒子数量影响搜索能力")
+                    base_particles = 30
+                    recommended_particles = base_particles + n_farms * 5
+                    algorithm_params['pop_size'] = st.slider("粒子数量", 20, 150, recommended_particles,
+                                                             help=f"推荐值: {recommended_particles}")
                 with col19:
-                    algorithm_params['generations'] = st.slider("迭代次数", 50, 500, 100,
-                                                                help="迭代次数越多，结果可能越好")
+                    algorithm_params['generations'] = st.slider("迭代次数", 50, 500, 100 + n_farms * 25)
 
                 col20, col21, col22 = st.columns(3)
                 with col20:
-                    algorithm_params['w'] = st.slider("惯性权重", 0.1, 1.0, 0.7, 0.1,
-                                                      help="控制粒子速度的保持程度")
+                    algorithm_params['w'] = st.slider("惯性权重", 0.1, 1.0, 0.7, 0.1)
                 with col21:
-                    algorithm_params['c1'] = st.slider("个体学习因子", 0.1, 2.0, 1.5, 0.1,
-                                                       help="控制个体经验的影响")
+                    algorithm_params['c1'] = st.slider("个体学习因子", 0.1, 2.0, 1.5, 0.1)
                 with col22:
-                    algorithm_params['c2'] = st.slider("社会学习因子", 0.1, 2.0, 1.5, 0.1,
-                                                       help="控制群体经验的影响")
+                    algorithm_params['c2'] = st.slider("社会学习因子", 0.1, 2.0, 1.5, 0.1)
 
             elif algo == "PuLP优化求解器":
                 col23, col24 = st.columns(2)
@@ -163,8 +222,10 @@ def strategy_optimization_page():
                         help="选择线性规划求解器"
                     )
                 with col24:
-                    algorithm_params['time_limit'] = st.slider("时间限制(秒)", 10, 300, 60,
-                                                               help="求解器最大运行时间")
+                    base_time = 60
+                    recommended_time = base_time + n_farms * 30
+                    algorithm_params['time_limit'] = st.slider("时间限制(秒)", 10, 600, recommended_time,
+                                                               help=f"推荐值: {recommended_time}秒")
 
         # 文件上传和处理
         st.markdown("<hr style='margin: 8px 0;'>", unsafe_allow_html=True)
@@ -180,7 +241,7 @@ def strategy_optimization_page():
                     df["wind_power_density"] = 0.5 * 1.225 * (df["predicted_wind_speed"] ** 3)
 
                 # 首先过滤奉节县边界内的点
-                base_map = create_fengjie_base_map()
+                base_map = create_maale_gilboa_base_map()
                 if base_map:
                     # 创建几何点并检查是否在边界内
                     geometries = [Point(lon, lat) for lon, lat in zip(df['lon'], df['lat'])]
@@ -192,11 +253,11 @@ def strategy_optimization_page():
 
                     st.info(f"🗺️ 过滤后：{len(df)} 个点在奉节县边界内")
 
-                # 然后设置有效点位 - 使用新的连续字段
+                # 然后设置有效点位
                 df["valid"] = (
-                        (df["predicted_wind_speed"] >= 5.0) &  # 降低风速要求
-                        (df["slope"] <= 35) &  # 坡度约束
-                        (df["elevation"] >= 150) & (df["elevation"] <= 1600)  # 海拔约束
+                        (df["predicted_wind_speed"] >= 5.0) &
+                        (df["slope"] <= 35) &
+                        (df["elevation"] >= 150) & (df["elevation"] <= 1600)
                 )
 
                 st.session_state["windfarm_data"] = df
@@ -228,250 +289,38 @@ def strategy_optimization_page():
 
             # 显示有效点位信息
             valid_count = df['valid'].sum() if 'valid' in df.columns else 0
-            if valid_count < algorithm_params['n_turbines']:
-                st.error(f"❌ 有效点位数量({valid_count})少于目标风机数量({algorithm_params['n_turbines']})")
-                st.info("💡 建议：减少风机数量或检查数据约束条件")
+            if valid_count < total_turbines:
+                st.error(f"❌ 有效点位数量({valid_count})少于目标风机数量({total_turbines})")
+                st.info("💡 建议：减少风场数量或单场风机数，或检查数据约束条件")
             else:
-                st.success(f"✅ 有效点位数量({valid_count})满足目标风机数量({algorithm_params['n_turbines']})")
+                st.success(f"✅ 有效点位数量({valid_count})满足目标风机数量({total_turbines})")
 
             if st.button("🚀 开始优化计算", use_container_width=True, type="primary"):
-                with st.spinner("正在计算最优布局..."):
+                with st.spinner(f"正在计算{n_farms}个风电场的最优布局..."):
                     try:
                         # 使用真实优化函数调用
                         result = call_optimize_function(df, algo, algorithm_params)
                         st.session_state["optimization_result"] = result
-                        st.success("🎯 优化完成")
+                        st.success(f"🎯 {n_farms}个风电场优化完成")
                         st.session_state.current_page = "result"
                         st.rerun()
                     except Exception as e:
                         st.error(f"❌ 优化计算失败: {str(e)}")
-                        st.info("💡 建议：尝试使用基础参数或检查数据格式")
+                        st.info("💡 建议：尝试减少风场数量或使用更宽松的约束条件")
         else:
             st.button("🚀 开始优化计算", use_container_width=True, disabled=True)
 
     # ========== 优化结果详情展示在页面下端 ==========
     if st.session_state.current_page == "result" and "optimization_result" in st.session_state:
         st.markdown("---")
-        st.markdown("#### 📊 优化结果分析")
+        st.markdown("#### 📊 多风场优化结果分析")
 
         result = st.session_state["optimization_result"]
         df = st.session_state["windfarm_data"]
 
-        # 直接调用 display_optimization_result，其中已经包含了收敛图
+        # 显示多风场特定的分析结果
         display_optimization_result(result, df)
 
-        # ========== 储能调度分析 ==========
-        st.markdown("---")
-        st.markdown("#### 🔋 储能调度策略分析")
-
-        # 从优化结果中提取风机位置数据
-        show_storage_analysis = False
-        metrics = None
-
-        # 方法1: 尝试从优化结果中获取风机位置
-        best_locations = result.get('best_locations', [])
-
-        # 方法2: 如果best_locations不存在，尝试其他可能的键
-        if not best_locations:
-            possible_keys = ['solution', 'best_solution', 'selected_indices', 'positions']
-            for key in possible_keys:
-                if key in result and result[key]:
-                    best_locations = result[key]
-                    break
-
-        # 方法3: 如果还是没有找到，从display_optimization_result中推断
-        if not best_locations and 'best_positions_data' in result:
-            # 使用优化算法返回的真实最优位置数据
-            all_turbines = result['best_positions_data']
-            if not all_turbines.empty:
-                best_locations = all_turbines.index.tolist()
-
-        st.info(f"🔍 找到 {len(best_locations)} 个最优风机位置")
-
-        if best_locations and len(best_locations) > 0:
-            # 使用最优风机的真实数据
-            try:
-                # 获取最优风机对应的数据
-                optimal_turbines = df.loc[best_locations[:n_turbines]]
-
-                if not optimal_turbines.empty and "predicted_wind_speed" in optimal_turbines.columns:
-                    # 模拟24小时风速数据（基于真实风机位置的风速）
-                    time_hours = 24
-                    hours = list(range(time_hours))
-
-                    # 使用真实风机位置的风速数据创建波动序列
-                    base_wind_speeds = optimal_turbines['predicted_wind_speed'].values
-
-                    # 为每个风机创建24小时的风速序列
-                    hourly_wind_speeds_all = []
-                    for base_speed in base_wind_speeds:
-                        # 基于基础风速创建有波动性的序列
-                        np.random.seed(42)  # 固定随机种子以便重现
-                        hourly_variation = base_speed + np.random.normal(0, 1.5, time_hours)
-                        hourly_variation = np.clip(hourly_variation, 3, 25)
-                        hourly_wind_speeds_all.append(hourly_variation)
-
-                    # 计算每个风机的发电功率
-                    turbine_capacity = 2000  # kW
-                    wind_power_all = []
-                    for hourly_speeds in hourly_wind_speeds_all:
-                        turbine_power = calculate_wind_power_from_speed(hourly_speeds, turbine_capacity)
-                        wind_power_all.append(turbine_power)
-
-                    # 汇总所有风机的总功率
-                    wind_power_total = np.sum(wind_power_all, axis=0)
-
-                    # 初始化储能调度器
-                    scheduler = EnergyStorageScheduler(
-                        capacity_kwh=algorithm_params['storage_capacity'],
-                        max_power_kw=algorithm_params['max_power']
-                    )
-
-                    # 应用调度策略
-                    if strategy == "出力平滑":
-                        smoothed_power, battery_soc, charge_discharge = scheduler.smoothing_strategy(wind_power_total)
-                        delivered_power = smoothed_power
-                        curtailed_power = np.maximum(wind_power_total - smoothed_power, 0)
-
-                    elif strategy == "弃风消减":
-                        grid_capacity = np.percentile(wind_power_total, 70)  # 假设电网接收容量为70%分位数
-                        delivered_power, curtailed_power, battery_soc, charge_discharge = \
-                            scheduler.curtailment_reduction_strategy(wind_power_total, grid_capacity)
-                    else:  # 混合策略
-                        # 先平滑，再考虑弃风
-                        smoothed_power, battery_soc, charge_discharge = scheduler.smoothing_strategy(wind_power_total)
-                        grid_capacity = np.percentile(smoothed_power, 80)
-                        delivered_power, curtailed_power, _, _ = \
-                            scheduler.curtailment_reduction_strategy(smoothed_power, grid_capacity)
-
-                    # 计算指标
-                    metrics = calculate_metrics(wind_power_total, delivered_power, curtailed_power)
-                    show_storage_analysis = True
-
-                    # 显示储能调度分析结果
-                    if show_storage_analysis:
-                        # 显示所有风机汇总信息
-                        st.markdown("#### 📋 风机列表")
-                        turbine_info = optimal_turbines[
-                            ['lat', 'lon', 'predicted_wind_speed', 'elevation', 'slope']].copy()
-                        turbine_info['风机编号'] = [f'T{i + 1}' for i in range(len(turbine_info))]
-                        turbine_info['平均功率(kW)'] = [np.mean(power) for power in wind_power_all]
-                        turbine_info['最大功率(kW)'] = [np.max(power) for power in wind_power_all]
-                        turbine_info['可消纳电量(MWh)'] = [np.sum(power) / 1000 for power in wind_power_all]
-
-                        # 重新排列列顺序
-                        display_columns = ['风机编号', 'lat', 'lon', 'predicted_wind_speed', '平均功率(kW)',
-                                           '最大功率(kW)', '可消纳电量(MWh)', 'elevation', 'slope']
-                        display_columns = [col for col in display_columns if col in turbine_info.columns]
-                        turbine_info = turbine_info[display_columns]
-
-                        st.dataframe(turbine_info, use_container_width=True)
-
-                        # 风机选择器
-                        st.markdown("#### 🔍 选择要查看的风机")
-
-                        # 创建风机选择下拉菜单
-                        turbine_options = [
-                            f"T{i + 1} (经度: {optimal_turbines.iloc[i]['lon']:.4f}, 纬度: {optimal_turbines.iloc[i]['lat']:.4f})"
-                            for i in range(len(optimal_turbines))]
-
-                        selected_turbine = st.selectbox(
-                            "选择风机查看详细储能调度评估",
-                            options=turbine_options,
-                            index=0,
-                            help="选择要查看详细储能调度分析的风机"
-                        )
-
-                        # 获取选中的风机索引
-                        selected_index = turbine_options.index(selected_turbine)
-
-                        # 显示选中的风机详细评估
-                        st.markdown(f"---")
-                        st.markdown(f"### 🌬️ 风机 T{selected_index + 1} 储能调度详细评估")
-
-                        # 获取当前选中风机的数据
-                        current_turbine_power = wind_power_all[selected_index]
-
-                        # 为单个风机创建储能调度（使用总储能系统的一部分）
-                        individual_storage_capacity = algorithm_params['storage_capacity'] / len(optimal_turbines)
-                        individual_max_power = algorithm_params['max_power'] / len(optimal_turbines)
-
-                        individual_scheduler = EnergyStorageScheduler(
-                            capacity_kwh=individual_storage_capacity,
-                            max_power_kw=individual_max_power
-                        )
-
-                        # 对单个风机应用调度策略
-                        if strategy == "出力平滑":
-                            individual_smoothed, individual_soc, individual_charge = individual_scheduler.smoothing_strategy(
-                                current_turbine_power)
-                            individual_delivered = individual_smoothed
-                            individual_curtailed = np.maximum(current_turbine_power - individual_smoothed, 0)
-
-                        elif strategy == "弃风消减":
-                            individual_grid_capacity = np.percentile(current_turbine_power, 70)
-                            individual_delivered, individual_curtailed, individual_soc, individual_charge = \
-                                individual_scheduler.curtailment_reduction_strategy(current_turbine_power,
-                                                                                    individual_grid_capacity)
-                        else:  # 混合策略
-                            individual_smoothed, individual_soc, individual_charge = individual_scheduler.smoothing_strategy(
-                                current_turbine_power)
-                            individual_grid_capacity = np.percentile(individual_smoothed, 80)
-                            individual_delivered, individual_curtailed, _, _ = \
-                                individual_scheduler.curtailment_reduction_strategy(individual_smoothed,
-                                                                                    individual_grid_capacity)
-
-                        # 计算单个风机的指标
-                        individual_metrics = calculate_metrics(current_turbine_power, individual_delivered,
-                                                               individual_curtailed)
-
-                        # 显示选中风机的详细信息
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            st.metric("经度", f"{optimal_turbines.iloc[selected_index]['lon']:.4f}")
-                        with col2:
-                            st.metric("纬度", f"{optimal_turbines.iloc[selected_index]['lat']:.4f}")
-                        with col3:
-                            st.metric("基础风速",
-                                      f"{optimal_turbines.iloc[selected_index]['predicted_wind_speed']:.1f} m/s")
-                        with col4:
-                            st.metric("分配储能", f"{individual_storage_capacity / 1000:.1f} MWh")
-
-                        # 显示单个风机评估
-                        create_single_turbine_assessment(
-                            current_turbine_power,
-                            individual_delivered,
-                            individual_curtailed,
-                            individual_soc,
-                            hours
-                        )
-
-                else:
-                    st.warning("⚠️ 最优风机数据中缺少风速信息，无法进行储能调度分析")
-
-            except Exception as e:
-                st.error(f"❌ 储能调度分析失败: {str(e)}")
-                st.info("💡 建议：检查数据格式或减少风机数量")
-        else:
-            st.warning("⚠️ 未找到有效的风机位置数据，无法进行储能调度分析")
-
-        # 调试信息
-        with st.expander("🔍 调试信息"):
-            debug_info = {
-                "算法参数": {k: v for k, v in algorithm_params.items() if k not in ['storage_capacity', 'max_power']},
-                "储能配置": f"{storage_capacity} MWh, {max_power} MW",
-                "调度策略": strategy,
-                "最终适应度": result.get('best_fitness', '未知'),
-                "数据点数": len(df),
-                "有效点数": df['valid'].sum() if 'valid' in df.columns else '未知',
-                "找到的风机位置数": len(best_locations) if 'best_locations' in locals() else 0,
-                "优化模式": "真实算法计算"
-            }
-
-            if metrics is not None:
-                debug_info["性能指标"] = metrics
-
-            st.json(debug_info)
 
 # ======================================================
 # 🚀 运行 Streamlit

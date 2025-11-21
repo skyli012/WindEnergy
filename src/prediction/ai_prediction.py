@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, StackingRegressor
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -15,6 +15,18 @@ import scipy.stats as stats
 import warnings
 
 warnings.filterwarnings('ignore')
+
+# 深度学习库
+try:
+    import tensorflow as tf
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import LSTM, GRU, Dense, Dropout, Input
+    from tensorflow.keras.optimizers import Adam
+    from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+
+    HAS_TENSORFLOW = True
+except Exception:
+    HAS_TENSORFLOW = False
 
 # 可选库
 try:
@@ -37,6 +49,59 @@ try:
     HAS_CATBOOST = True
 except Exception:
     HAS_CATBOOST = False
+
+
+# ===================== 深度学习模型构建函数 =====================
+def create_lstm_model(input_shape, units=50, dropout_rate=0.2, learning_rate=0.001):
+    """创建LSTM模型"""
+    model = Sequential([
+        Input(shape=input_shape),
+        LSTM(units, return_sequences=True, dropout=dropout_rate),
+        LSTM(units // 2, dropout=dropout_rate),
+        Dense(32, activation='relu'),
+        Dropout(dropout_rate),
+        Dense(16, activation='relu'),
+        Dense(1)
+    ])
+
+    model.compile(
+        optimizer=Adam(learning_rate=learning_rate),
+        loss='mse',
+        metrics=['mae']
+    )
+    return model
+
+
+def create_gru_model(input_shape, units=50, dropout_rate=0.2, learning_rate=0.001):
+    """创建GRU模型"""
+    model = Sequential([
+        Input(shape=input_shape),
+        GRU(units, return_sequences=True, dropout=dropout_rate),
+        GRU(units // 2, dropout=dropout_rate),
+        Dense(32, activation='relu'),
+        Dropout(dropout_rate),
+        Dense(16, activation='relu'),
+        Dense(1)
+    ])
+
+    model.compile(
+        optimizer=Adam(learning_rate=learning_rate),
+        loss='mse',
+        metrics=['mae']
+    )
+    return model
+
+
+def prepare_sequences_for_dl(X, y, time_steps=10):
+    """为深度学习模型准备时间序列数据"""
+    X_sequences = []
+    y_sequences = []
+
+    for i in range(time_steps, len(X)):
+        X_sequences.append(X[i - time_steps:i])
+        y_sequences.append(y[i])
+
+    return np.array(X_sequences), np.array(y_sequences)
 
 
 # ===================== 主页面 =====================
@@ -126,12 +191,23 @@ def single_model_analysis(df, datetime_col, target_column):
             ] if col in feature_candidates]
         )
 
-
     with col2:
-        # 模型选择
-        model_options = ["随机森林", "梯度提升", "XGBoost", "LightGBM", "CatBoost", "线性回归", "支持向量机"]
-        available_models = [m for m in model_options if
-                            not (m in ["XGBoost", "LightGBM", "CatBoost"] and not globals().get(f'HAS_{m.upper()}'))]
+        # 模型选择 - 添加深度学习模型
+        model_options = ["随机森林", "梯度提升", "XGBoost", "LightGBM", "CatBoost",
+                         "线性回归", "支持向量机", "LSTM", "GRU"]
+
+        # 检查库可用性
+        available_models = []
+        for model in model_options:
+            if model in ["XGBoost", "LightGBM", "CatBoost"]:
+                if globals().get(f'HAS_{model.upper()}'):
+                    available_models.append(model)
+            elif model in ["LSTM", "GRU"]:
+                if HAS_TENSORFLOW:
+                    available_models.append(model)
+            else:
+                available_models.append(model)
+
         model_option = st.selectbox("选择算法", available_models)
 
         # 高级参数
@@ -139,6 +215,15 @@ def single_model_analysis(df, datetime_col, target_column):
             test_size = st.slider("测试集比例", 0.1, 0.4, 0.2, 0.05)
             cv_folds = st.slider("交叉验证折数", 3, 10, 5)
             enable_permutation = st.checkbox("启用置换重要性分析", value=True)
+
+            # 深度学习特定参数
+            if model_option in ["LSTM", "GRU"]:
+                time_steps = st.slider("时间步长", 5, 50, 10,
+                                       help="考虑的历史时间步数")
+                lstm_units = st.slider("LSTM/GRU单元数", 16, 128, 50)
+                epochs = st.slider("训练轮数", 10, 200, 50)
+                batch_size = st.slider("批大小", 16, 128, 32)
+                learning_rate = st.slider("学习率", 0.0001, 0.01, 0.001, 0.0001)
 
     if not selected_features:
         st.warning("请选择至少一个特征变量")
@@ -158,6 +243,10 @@ def single_model_analysis(df, datetime_col, target_column):
             X_test_scaled = scaler.transform(X_test)
 
             # 模型训练
+            model = None
+            training_time = 0
+            history = None
+
             if model_option == "随机森林":
                 model = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
             elif model_option == "梯度提升":
@@ -172,23 +261,90 @@ def single_model_analysis(df, datetime_col, target_column):
                 model = LinearRegression()
             elif model_option == "支持向量机":
                 model = SVR(kernel='rbf', C=1.0, epsilon=0.1)
+            elif model_option == "LSTM":
+                # 准备时间序列数据
+                X_train_seq, y_train_seq = prepare_sequences_for_dl(X_train_scaled, y_train.values, time_steps)
+                X_test_seq, y_test_seq = prepare_sequences_for_dl(X_test_scaled, y_test.values, time_steps)
 
-            start_time = time.time()
-            model.fit(X_train_scaled, y_train)
-            training_time = time.time() - start_time
+                # 创建模型
+                model = create_lstm_model(
+                    input_shape=(time_steps, len(selected_features)),
+                    units=lstm_units,
+                    learning_rate=learning_rate
+                )
 
-            # 预测
-            y_pred = model.predict(X_test_scaled)
+                # 训练模型
+                start_time = time.time()
+                history = model.fit(
+                    X_train_seq, y_train_seq,
+                    epochs=epochs,
+                    batch_size=batch_size,
+                    validation_data=(X_test_seq, y_test_seq),
+                    verbose=0,
+                    callbacks=[
+                        EarlyStopping(patience=10, restore_best_weights=True),
+                        ReduceLROnPlateau(patience=5, factor=0.5)
+                    ]
+                )
+                training_time = time.time() - start_time
 
-            # 交叉验证
-            cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=cv_folds, scoring='r2')
+                # 预测
+                y_pred = model.predict(X_test_seq).flatten()
+                y_test = y_test_seq
+
+            elif model_option == "GRU":
+                # 准备时间序列数据
+                X_train_seq, y_train_seq = prepare_sequences_for_dl(X_train_scaled, y_train.values, time_steps)
+                X_test_seq, y_test_seq = prepare_sequences_for_dl(X_test_scaled, y_test.values, time_steps)
+
+                # 创建模型
+                model = create_gru_model(
+                    input_shape=(time_steps, len(selected_features)),
+                    units=lstm_units,
+                    learning_rate=learning_rate
+                )
+
+                # 训练模型
+                start_time = time.time()
+                history = model.fit(
+                    X_train_seq, y_train_seq,
+                    epochs=epochs,
+                    batch_size=batch_size,
+                    validation_data=(X_test_seq, y_test_seq),
+                    verbose=0,
+                    callbacks=[
+                        EarlyStopping(patience=10, restore_best_weights=True),
+                        ReduceLROnPlateau(patience=5, factor=0.5)
+                    ]
+                )
+                training_time = time.time() - start_time
+
+                # 预测
+                y_pred = model.predict(X_test_seq).flatten()
+                y_test = y_test_seq
+
+            # 传统机器学习模型的训练和预测
+            if model_option not in ["LSTM", "GRU"]:
+                start_time = time.time()
+                model.fit(X_train_scaled, y_train)
+                training_time = time.time() - start_time
+                y_pred = model.predict(X_test_scaled)
+
+            # 交叉验证（仅对传统模型）
+            cv_scores = []
+            if model_option not in ["LSTM", "GRU"]:
+                cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=cv_folds, scoring='r2')
 
             # 计算指标
             results = calculate_metrics(y_test, y_pred, training_time)
-            results['cv_mean'] = cv_scores.mean()
-            results['cv_std'] = cv_scores.std()
+            if model_option not in ["LSTM", "GRU"]:
+                results['cv_mean'] = cv_scores.mean() if len(cv_scores) > 0 else 0
+                results['cv_std'] = cv_scores.std() if len(cv_scores) > 0 else 0
+            else:
+                results['cv_mean'] = 0
+                results['cv_std'] = 0
 
-            # 特征重要性
+            # 特征重要性（仅对支持特征重要性的模型）
             feature_importance = None
             permutation_importance_result = None
 
@@ -199,7 +355,7 @@ def single_model_analysis(df, datetime_col, target_column):
                 }).sort_values('importance', ascending=False)
 
             # 置换重要性
-            if enable_permutation:
+            if enable_permutation and model_option not in ["LSTM", "GRU"]:
                 with st.spinner("计算置换重要性中..."):
                     permutation_importance_result = calculate_permutation_importance(
                         model, X_test_scaled, y_test, selected_features
@@ -208,7 +364,7 @@ def single_model_analysis(df, datetime_col, target_column):
             # 显示结果
             display_single_model_results(
                 results, feature_importance, permutation_importance_result,
-                model_option, y_test, y_pred, cv_scores, X_test_scaled, model
+                model_option, y_test, y_pred, cv_scores, X_test_scaled, model, history
             )
 
 
@@ -230,16 +386,42 @@ def multi_model_comparison(df, datetime_col, target_column):
         ] if col in feature_candidates]
     )
 
-    # 模型选择
-    model_options = ["随机森林", "梯度提升", "XGBoost", "LightGBM", "CatBoost", "线性回归", "支持向量机"]
-    available_models = [m for m in model_options if
-                        not (m in ["XGBoost", "LightGBM", "CatBoost"] and not globals().get(f'HAS_{m.upper()}'))]
+    # 模型选择 - 添加深度学习模型
+    model_options = ["随机森林", "梯度提升", "XGBoost", "LightGBM", "CatBoost",
+                     "线性回归", "支持向量机", "LSTM", "GRU"]
+
+    # 检查库可用性
+    available_models = []
+    for model in model_options:
+        if model in ["XGBoost", "LightGBM", "CatBoost"]:
+            if globals().get(f'HAS_{model.upper()}'):
+                available_models.append(model)
+        elif model in ["LSTM", "GRU"]:
+            if HAS_TENSORFLOW:
+                available_models.append(model)
+        else:
+            available_models.append(model)
 
     selected_algorithms = st.multiselect(
         "选择对比算法",
         options=available_models,
-        default=available_models[:3]
+        default=available_models[:4]  # 默认选择前4个可用模型
     )
+
+    # 深度学习参数
+    dl_params = {}
+    if any(model in selected_algorithms for model in ["LSTM", "GRU"]):
+        with st.expander("深度学习参数配置"):
+            time_steps = st.slider("时间步长", 5, 50, 10)
+            lstm_units = st.slider("LSTM/GRU单元数", 16, 128, 50)
+            epochs = st.slider("训练轮数", 10, 100, 30)
+            batch_size = st.slider("批大小", 16, 128, 32)
+            dl_params = {
+                'time_steps': time_steps,
+                'units': lstm_units,
+                'epochs': epochs,
+                'batch_size': batch_size
+            }
 
     if st.button("🔬 开始对比分析", type="primary", use_container_width=True):
         if not selected_features or not selected_algorithms:
@@ -262,6 +444,7 @@ def multi_model_comparison(df, datetime_col, target_column):
             feature_importances = {}
             predictions = {}
             models = {}
+            training_histories = {}
 
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -270,6 +453,9 @@ def multi_model_comparison(df, datetime_col, target_column):
                 status_text.text(f"训练 {algo}... ({i + 1}/{len(selected_algorithms)})")
 
                 try:
+                    model = None
+                    history = None
+
                     if algo == "随机森林":
                         model = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
                     elif algo == "梯度提升":
@@ -284,17 +470,71 @@ def multi_model_comparison(df, datetime_col, target_column):
                         model = LinearRegression()
                     elif algo == "支持向量机":
                         model = SVR(kernel='rbf', C=1.0, epsilon=0.1)
+                    elif algo == "LSTM":
+                        # 准备时间序列数据
+                        X_train_seq, y_train_seq = prepare_sequences_for_dl(
+                            X_train_scaled, y_train.values, dl_params['time_steps'])
+                        X_test_seq, y_test_seq = prepare_sequences_for_dl(
+                            X_test_scaled, y_test.values, dl_params['time_steps'])
 
-                    start_time = time.time()
-                    model.fit(X_train_scaled, y_train)
-                    training_time = time.time() - start_time
+                        model = create_lstm_model(
+                            input_shape=(dl_params['time_steps'], len(selected_features)),
+                            units=dl_params['units']
+                        )
 
-                    y_pred = model.predict(X_test_scaled)
+                        start_time = time.time()
+                        history = model.fit(
+                            X_train_seq, y_train_seq,
+                            epochs=dl_params['epochs'],
+                            batch_size=dl_params['batch_size'],
+                            validation_data=(X_test_seq, y_test_seq),
+                            verbose=0
+                        )
+                        training_time = time.time() - start_time
+
+                        y_pred = model.predict(X_test_seq).flatten()
+                        y_test_used = y_test_seq
+
+                    elif algo == "GRU":
+                        # 准备时间序列数据
+                        X_train_seq, y_train_seq = prepare_sequences_for_dl(
+                            X_train_scaled, y_train.values, dl_params['time_steps'])
+                        X_test_seq, y_test_seq = prepare_sequences_for_dl(
+                            X_test_scaled, y_test.values, dl_params['time_steps'])
+
+                        model = create_gru_model(
+                            input_shape=(dl_params['time_steps'], len(selected_features)),
+                            units=dl_params['units']
+                        )
+
+                        start_time = time.time()
+                        history = model.fit(
+                            X_train_seq, y_train_seq,
+                            epochs=dl_params['epochs'],
+                            batch_size=dl_params['batch_size'],
+                            validation_data=(X_test_seq, y_test_seq),
+                            verbose=0
+                        )
+                        training_time = time.time() - start_time
+
+                        y_pred = model.predict(X_test_seq).flatten()
+                        y_test_used = y_test_seq
+
+                    # 传统模型的训练
+                    if algo not in ["LSTM", "GRU"]:
+                        start_time = time.time()
+                        model.fit(X_train_scaled, y_train)
+                        training_time = time.time() - start_time
+                        y_pred = model.predict(X_test_scaled)
+                        y_test_used = y_test
+
                     predictions[algo] = y_pred
                     models[algo] = model
+                    if history:
+                        training_histories[algo] = history
 
                     # 计算指标
-                    results = calculate_metrics(y_test, y_pred, training_time)
+                    results = calculate_metrics(y_test_used, y_pred, training_time)
 
                     # 特征重要性
                     if hasattr(model, 'feature_importances_'):
@@ -323,18 +563,47 @@ def multi_model_comparison(df, datetime_col, target_column):
             # 显示对比结果
             display_comparison_results(
                 comparison_results, feature_importances, y_test,
-                predictions, selected_features, models, X_test_scaled
+                predictions, selected_features, models, X_test_scaled, training_histories
             )
 
 
 def display_comparison_results(comparison_results, feature_importances, y_true, predictions, selected_features, models,
-                               X_test_scaled):
+                               X_test_scaled, training_histories=None):
     """显示多模型对比结果"""
     st.subheader("📋 性能对比表")
     df_comparison = pd.DataFrame(comparison_results)
     st.dataframe(df_comparison.style.format({
         "MAE": "{:.3f}", "RMSE": "{:.3f}", "R²": "{:.4f}", "训练时间(秒)": "{:.2f}"
     }), use_container_width=True)
+
+    # 深度学习训练历史可视化
+    if training_histories:
+        st.subheader("📈 深度学习模型训练过程")
+        dl_algorithms = [algo for algo in training_histories.keys() if algo in ["LSTM", "GRU"]]
+
+        if dl_algorithms:
+            fig_history = go.Figure()
+            for algo in dl_algorithms:
+                history = training_histories[algo]
+                fig_history.add_trace(go.Scatter(
+                    y=history.history['loss'],
+                    mode='lines',
+                    name=f'{algo} - 训练损失'
+                ))
+                fig_history.add_trace(go.Scatter(
+                    y=history.history['val_loss'],
+                    mode='lines',
+                    name=f'{algo} - 验证损失',
+                    line=dict(dash='dash')
+                ))
+
+            fig_history.update_layout(
+                title="深度学习模型训练损失曲线",
+                xaxis_title="训练轮数",
+                yaxis_title="损失值",
+                height=400
+            )
+            st.plotly_chart(fig_history, use_container_width=True)
 
     # 特征重要性对比
     if feature_importances:
@@ -389,16 +658,11 @@ def display_comparison_results(comparison_results, feature_importances, y_true, 
         sample_size = min(1000, len(y_true))
         if len(y_true) > sample_size:
             try:
-                # 确保索引在范围内
-                valid_indices = np.arange(len(y_true))
-                indices = np.random.choice(valid_indices, size=sample_size, replace=False)
-
-                # 使用 iloc 来安全地访问 pandas Series
+                indices = np.random.choice(len(y_true), size=sample_size, replace=False)
                 if hasattr(y_true, 'iloc'):
                     y_true_sample = y_true.iloc[indices]
                 else:
                     y_true_sample = y_true[indices]
-
                 y_pred_sample = y_pred[indices]
             except Exception as e:
                 st.warning(f"采样失败: {str(e)}，使用全部数据")
@@ -407,6 +671,7 @@ def display_comparison_results(comparison_results, feature_importances, y_true, 
         else:
             y_true_sample = y_true
             y_pred_sample = y_pred
+
         # 计算该算法的R²
         algo_r2 = r2_score(y_true_sample, y_pred_sample)
 
@@ -570,6 +835,7 @@ def display_comparison_results(comparison_results, feature_importances, y_true, 
     - ⚖️ **要求平衡性**: 建议尝试 **{ranked_by_r2[1]['算法'] if len(ranked_by_r2) > 1 else best_model}**
     - 📊 **综合考虑**: 查看各指标选择最适合业务场景的算法
     """)
+
 
 # ===================== 深度分析 =====================
 def deep_analysis(df, datetime_col, target_column):
@@ -766,9 +1032,10 @@ def calculate_permutation_importance(model, X_test, y_test, feature_names, n_rep
         st.warning(f"置换重要性计算失败: {str(e)}")
         return None
 
+
 # ===================== 结果显示函数 =====================
 def display_single_model_results(results, feature_importance, permutation_importance_result,
-                                 model_name, y_true, y_pred, cv_scores, X_test, model):
+                                 model_name, y_true, y_pred, cv_scores, X_test, model, history=None):
     st.subheader(f"📊 {model_name} 模型性能")
 
     # 指标卡片
@@ -777,14 +1044,20 @@ def display_single_model_results(results, feature_importance, permutation_import
     col2.metric("RMSE", f"{results['rmse']:.3f}")
     col3.metric("R²", f"{results['r2']:.4f}")
     col4.metric("训练时间", f"{results['training_time']:.2f}s")
-    col5.metric("CV R²", f"{results['cv_mean']:.4f}")
+
+    if model_name not in ["LSTM", "GRU"]:
+        col5.metric("CV R²", f"{results['cv_mean']:.4f}")
+    else:
+        col5.metric("验证损失", f"{history.history['val_loss'][-1]:.4f}" if history else "N/A")
 
     # 可视化标签页
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "预测效果", "残差分析", "特征重要性", "交叉验证", "误差分析", "模型诊断"
-    ])
+    tab_names = ["预测效果", "残差分析", "特征重要性", "交叉验证", "误差分析", "模型诊断"]
+    if model_name in ["LSTM", "GRU"]:
+        tab_names.insert(3, "训练过程")
 
-    with tab1:
+    tabs = st.tabs(tab_names)
+
+    with tabs[0]:
         # 预测 vs 真实值
         fig = go.Figure()
         fig.add_trace(go.Scatter(
@@ -809,17 +1082,12 @@ def display_single_model_results(results, feature_importance, permutation_import
         sample_size = min(200, len(y_true))
         if len(y_true) > sample_size:
             try:
-                # 确保索引在范围内
-                valid_indices = np.arange(len(y_true))
-                sample_indices = np.random.choice(valid_indices, size=sample_size, replace=False)
-
-                # 使用 iloc 来安全地访问 pandas Series
+                indices = np.random.choice(len(y_true), size=sample_size, replace=False)
                 if hasattr(y_true, 'iloc'):
-                    y_true_sample = y_true.iloc[sample_indices]
+                    y_true_sample = y_true.iloc[indices]
                 else:
-                    y_true_sample = y_true[sample_indices]
-
-                y_pred_sample = y_pred[sample_indices]
+                    y_true_sample = y_true[indices]
+                y_pred_sample = y_pred[indices]
 
                 fig_ts = go.Figure()
                 fig_ts.add_trace(go.Scatter(
@@ -834,7 +1102,7 @@ def display_single_model_results(results, feature_importance, permutation_import
             except Exception as e:
                 st.warning(f"时间序列采样失败: {str(e)}")
 
-    with tab2:
+    with tabs[1]:
         # 残差分析
         residuals = y_true - y_pred
 
@@ -875,7 +1143,7 @@ def display_single_model_results(results, feature_importance, permutation_import
         fig.update_layout(height=600, showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
 
-    with tab3:
+    with tabs[2]:
         # 特征重要性
         col1, col2 = st.columns(2)
 
@@ -895,27 +1163,62 @@ def display_single_model_results(results, feature_importance, permutation_import
             else:
                 st.info("未计算置换重要性")
 
-    with tab4:
+    # 深度学习训练过程可视化
+    if model_name in ["LSTM", "GRU"] and history:
+        with tabs[3]:
+            st.subheader("📈 训练过程监控")
+
+            fig_loss = go.Figure()
+            fig_loss.add_trace(go.Scatter(
+                y=history.history['loss'],
+                mode='lines',
+                name='训练损失'
+            ))
+            fig_loss.add_trace(go.Scatter(
+                y=history.history['val_loss'],
+                mode='lines',
+                name='验证损失'
+            ))
+            fig_loss.update_layout(
+                title="训练和验证损失曲线",
+                xaxis_title="训练轮数",
+                yaxis_title="损失值"
+            )
+            st.plotly_chart(fig_loss, use_container_width=True)
+
+            # 显示模型结构信息
+            st.subheader("🛠️ 模型结构信息")
+            model_summary = []
+            model.summary(print_fn=lambda x: model_summary.append(x))
+            st.text_area("模型结构", "\n".join(model_summary), height=200)
+
+    # 调整后续标签页的索引
+    offset = 1 if model_name in ["LSTM", "GRU"] else 0
+
+    with tabs[3 + offset]:
         # 交叉验证结果
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=list(range(1, len(cv_scores) + 1)),
-            y=cv_scores,
-            marker_color='lightgreen',
-            name='每折R²'
-        ))
-        fig.add_hline(y=results['cv_mean'], line_dash='dash', line_color='red',
-                      annotation_text=f'平均 R²: {results["cv_mean"]:.4f}')
-        fig.update_layout(
-            title="交叉验证结果",
-            xaxis_title="折数",
-            yaxis_title="R² 分数"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        if model_name not in ["LSTM", "GRU"]:
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=list(range(1, len(cv_scores) + 1)),
+                y=cv_scores,
+                marker_color='lightgreen',
+                name='每折R²'
+            ))
+            fig.add_hline(y=results['cv_mean'], line_dash='dash', line_color='red',
+                          annotation_text=f'平均 R²: {results["cv_mean"]:.4f}')
+            fig.update_layout(
+                title="交叉验证结果",
+                xaxis_title="折数",
+                yaxis_title="R² 分数"
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-        st.write(f"交叉验证稳定性: {results['cv_std']:.4f} (标准差)")
+            st.write(f"交叉验证稳定性: {results['cv_std']:.4f} (标准差)")
+        else:
+            st.info("深度学习模型使用验证集进行性能评估")
 
-    with tab5:
+    with tabs[4 + offset]:
         # 误差分析
         absolute_errors = np.abs(y_true - y_pred)
         relative_errors = np.abs((y_true - y_pred) / np.where(y_true == 0, 1e-10, y_true))
@@ -934,44 +1237,47 @@ def display_single_model_results(results, feature_importance, permutation_import
         fig = px.histogram(x=absolute_errors, nbins=50, title="绝对误差分布")
         st.plotly_chart(fig, use_container_width=True)
 
-    with tab6:
+    with tabs[5 + offset]:
         # 模型诊断
         st.subheader("模型诊断信息")
 
-        # 学习曲线分析（简化版）
-        train_sizes = [0.1, 0.3, 0.5, 0.7, 0.9]
-        train_scores = []
+        if model_name not in ["LSTM", "GRU"]:
+            # 学习曲线分析（简化版）
+            train_sizes = [0.1, 0.3, 0.5, 0.7, 0.9]
+            train_scores = []
 
-        for size in train_sizes:
-            n_samples = int(len(X_test) * size)
-            if n_samples > 0:
-                X_subset = X_test[:n_samples]
-                y_subset = y_true[:n_samples]
-                pred_subset = model.predict(X_subset)
-                train_scores.append(r2_score(y_subset, pred_subset))
+            for size in train_sizes:
+                n_samples = int(len(X_test) * size)
+                if n_samples > 0:
+                    X_subset = X_test[:n_samples]
+                    y_subset = y_true[:n_samples]
+                    pred_subset = model.predict(X_subset)
+                    train_scores.append(r2_score(y_subset, pred_subset))
 
-        if train_scores:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=[size for size in train_sizes[:len(train_scores)]],
-                y=train_scores,
-                mode='lines+markers',
-                name='测试集R²'
-            ))
-            fig.update_layout(
-                title="模型性能随数据量变化",
-                xaxis_title="数据比例",
-                yaxis_title="R²分数"
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            if train_scores:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=[size for size in train_sizes[:len(train_scores)]],
+                    y=train_scores,
+                    mode='lines+markers',
+                    name='测试集R²'
+                ))
+                fig.update_layout(
+                    title="模型性能随数据量变化",
+                    xaxis_title="数据比例",
+                    yaxis_title="R²分数"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("无法计算学习曲线")
+
+            # 模型稳定性分析
+            st.write("**模型稳定性分析**")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("交叉验证标准差", f"{results['cv_std']:.4f}")
+            with col2:
+                stability = "高" if results['cv_std'] < 0.05 else "中等" if results['cv_std'] < 0.1 else "低"
+                st.metric("稳定性评级", stability)
         else:
-            st.info("无法计算学习曲线")
-
-        # 模型稳定性分析
-        st.write("**模型稳定性分析**")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("交叉验证标准差", f"{results['cv_std']:.4f}")
-        with col2:
-            stability = "高" if results['cv_std'] < 0.05 else "中等" if results['cv_std'] < 0.1 else "低"
-            st.metric("稳定性评级", stability)
+            st.info("深度学习模型诊断信息已在训练过程标签页中显示")

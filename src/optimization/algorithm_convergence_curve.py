@@ -315,7 +315,6 @@ def check_constraints_violations(positions_data, constraints):
     return violations
 
 
-# 其他算法函数也需要类似修改...
 def real_simulated_annealing(df, n_turbines, **kwargs):
     """真实的模拟退火算法"""
     start_time = time.time()
@@ -400,22 +399,211 @@ def real_simulated_annealing(df, n_turbines, **kwargs):
     }
 
 
+def real_particle_swarm(df, n_turbines, pop_size=30, generations=100,
+                        w=0.7, c1=1.5, c2=1.5, **kwargs):
+    """真实的粒子群优化算法"""
+    start_time = time.time()
+
+    valid_points = df[df['valid']] if 'valid' in df.columns else df
+    if len(valid_points) < n_turbines:
+        valid_points = df
+
+    n_points = len(valid_points)
+
+    # 初始化粒子群
+    particles = []
+    velocities = []
+    personal_best_positions = []
+    personal_best_fitnesses = []
+
+    for _ in range(pop_size):
+        # 随机选择风机位置
+        positions = np.random.choice(valid_points.index, n_turbines, replace=False)
+        particles.append(positions)
+        velocities.append(np.zeros(n_turbines))
+        personal_best_positions.append(positions.copy())
+        fitness = calculate_fitness(positions, df, **kwargs)
+        personal_best_fitnesses.append(fitness)
+
+    # 全局最优
+    global_best_idx = np.argmax(personal_best_fitnesses)
+    global_best_position = personal_best_positions[global_best_idx].copy()
+    global_best_fitness = personal_best_fitnesses[global_best_idx]
+
+    fitness_history = [global_best_fitness]
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    for generation in range(generations):
+        for i in range(pop_size):
+            # 更新粒子位置
+            for d in range(n_turbines):
+                # PSO速度更新公式
+                r1, r2 = np.random.random(), np.random.random()
+                velocities[i][d] = (w * velocities[i][d] +
+                                    c1 * r1 * (personal_best_positions[i][d] - particles[i][d]) +
+                                    c2 * r2 * (global_best_position[d] - particles[i][d]))
+
+                # 位置更新 - 转换为离散索引
+                new_index = int(particles[i][d] + velocities[i][d])
+                new_index = max(0, min(new_index, n_points - 1))
+
+                # 确保不重复
+                if new_index not in particles[i]:
+                    particles[i][d] = new_index
+
+            # 计算适应度
+            current_fitness = calculate_fitness(particles[i], df, **kwargs)
+
+            # 更新个体最优
+            if current_fitness > personal_best_fitnesses[i]:
+                personal_best_positions[i] = particles[i].copy()
+                personal_best_fitnesses[i] = current_fitness
+
+                # 更新全局最优
+                if current_fitness > global_best_fitness:
+                    global_best_position = particles[i].copy()
+                    global_best_fitness = current_fitness
+
+        fitness_history.append(global_best_fitness)
+
+        # 更新进度
+        progress = (generation + 1) / generations
+        progress_bar.progress(progress)
+        status_text.text(f"粒子群进度: {generation + 1}/{generations}, 最优适应度: {global_best_fitness:.2f}")
+
+    progress_bar.empty()
+    status_text.empty()
+
+    computation_time = time.time() - start_time
+    best_positions_data = df.loc[global_best_position]
+    power_results = calculate_real_power_generation(best_positions_data)
+
+    return {
+        'best_positions': global_best_position.tolist(),
+        'best_positions_data': best_positions_data,
+        'best_fitness': global_best_fitness,
+        'fitness_history': fitness_history,
+        'algorithm': '粒子群优化算法',
+        'computation_time': computation_time,
+        'power_results': power_results,
+        'constraints_violated': check_constraints_violations(best_positions_data, kwargs)
+    }
+
+
+def real_pulp_optimization(df, n_turbines, solver_type="CBC", time_limit=60, **kwargs):
+    """使用PuLP进行数学规划优化"""
+    start_time = time.time()
+
+    valid_points = df[df['valid']] if 'valid' in df.columns else df
+    if len(valid_points) < n_turbines:
+        valid_points = df
+
+    # 创建问题
+    prob = pulp.LpProblem("WindFarm_Optimization", pulp.LpMaximize)
+
+    # 决策变量：是否选择该点位
+    x = pulp.LpVariable.dicts("x", valid_points.index, cat='Binary')
+
+    # 目标函数：最大化发电量，最小化成本
+    power_terms = []
+    cost_terms = []
+
+    for idx, point in valid_points.iterrows():
+        # 发电量项
+        wind_speed = point.get('predicted_wind_speed', 0)
+        power_value = 0.5 * 1.225 * (wind_speed ** 3) * 1000  # 简化计算
+        power_terms.append(power_value * x[idx])
+
+        # 成本项
+        cost_value = 0
+        if point.get('slope', 0) > kwargs.get('max_slope', 15):
+            cost_value += point['slope'] * 10
+        cost_terms.append(cost_value * x[idx])
+
+    # 目标函数
+    cost_weight = kwargs.get('cost_weight', 0.5)
+    prob += pulp.lpSum(power_terms) - cost_weight * pulp.lpSum(cost_terms)
+
+    # 约束：选择恰好n_turbines个点位
+    prob += pulp.lpSum([x[i] for i in valid_points.index]) == n_turbines
+
+    # 求解
+    if solver_type == "CBC":
+        solver = pulp.PULP_CBC_CMD(timeLimit=time_limit)
+    elif solver_type == "GLPK":
+        solver = pulp.GLPK_CMD(timeLimit=time_limit)
+    else:
+        solver = pulp.PULP_CBC_CMD(timeLimit=time_limit)
+
+    prob.solve(solver)
+
+    # 提取结果
+    selected_positions = []
+    for idx in valid_points.index:
+        if pulp.value(x[idx]) == 1:
+            selected_positions.append(idx)
+
+    best_fitness = pulp.value(prob.objective)
+    computation_time = time.time() - start_time
+
+    best_positions_data = df.loc[selected_positions]
+    power_results = calculate_real_power_generation(best_positions_data)
+
+    return {
+        'best_positions': selected_positions,
+        'best_positions_data': best_positions_data,
+        'best_fitness': best_fitness if best_fitness else 0,
+        'fitness_history': [best_fitness] if best_fitness else [0],
+        'algorithm': 'PuLP优化求解器',
+        'computation_time': computation_time,
+        'power_results': power_results,
+        'constraints_violated': check_constraints_violations(best_positions_data, kwargs)
+    }
+
+
 def call_optimize_function(df, algo, algorithm_params):
     """调用真实优化函数"""
 
-    if algo == "遗传算法":
-        result = real_genetic_algorithm(df, **algorithm_params)
-    elif algo == "模拟退火算法":
-        result = real_simulated_annealing(df, **algorithm_params)
-    elif algo == "粒子群优化算法":
-        # 需要实现真实的粒子群算法
-        result = real_genetic_algorithm(df, **algorithm_params)  # 临时使用遗传算法
-        result['algorithm'] = '粒子群优化算法'
-    elif algo == "PuLP优化求解器":
-        # 需要实现真实的PuLP求解
-        result = real_genetic_algorithm(df, **algorithm_params)  # 临时使用遗传算法
-        result['algorithm'] = 'PuLP优化求解器'
-    else:
-        result = real_genetic_algorithm(df, **algorithm_params)
+    # 参数映射和转换
+    optimization_params = algorithm_params.copy()
 
-    return result
+    # 处理风场数量相关的参数
+    if 'total_turbines' in optimization_params:
+        # 多风场优化：使用总风机数量
+        optimization_params['n_turbines'] = optimization_params['total_turbines']
+    elif 'n_turbines_per_farm' in optimization_params:
+        # 单风场优化：使用单场风机数量
+        optimization_params['n_turbines'] = optimization_params['n_turbines_per_farm']
+
+    # 移除可能冲突的参数
+    optimization_params.pop('n_farms', None)
+    optimization_params.pop('n_turbines_per_farm', None)
+    optimization_params.pop('total_turbines', None)
+    optimization_params.pop('min_farm_distance', None)
+
+    try:
+        if algo == "遗传算法":
+            result = real_genetic_algorithm(df, **optimization_params)
+        elif algo == "模拟退火算法":
+            result = real_simulated_annealing(df, **optimization_params)
+        elif algo == "粒子群优化算法":
+            result = real_particle_swarm(df, **optimization_params)
+        elif algo == "PuLP优化求解器":
+            result = real_pulp_optimization(df, **optimization_params)
+        else:
+            result = real_genetic_algorithm(df, **optimization_params)
+
+        return result
+
+    except Exception as e:
+        st.error(f"优化算法执行错误: {str(e)}")
+        # 回退到基础遗传算法
+        st.info("尝试使用基础参数重新计算...")
+        base_params = {
+            'n_turbines': optimization_params.get('n_turbines', 5),
+            'pop_size': 30,
+            'generations': 50
+        }
+        return real_genetic_algorithm(df, **base_params)
