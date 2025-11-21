@@ -8,6 +8,7 @@ from src.optimization.algorithm_convergence_curve import call_optimize_function
 from src.utils.check_data import check_data_quality
 from src.utils.create_map import display_maale_gilboa_standalone_map, display_environment, display_optimization_map, \
     create_maale_gilboa_base_map
+from src.visualization.energy_storage_display import display_energy_storage_performance, main
 from src.visualization.opt_result_show import display_optimization_result
 
 
@@ -66,7 +67,7 @@ def strategy_optimization_page():
 
         # 基础参数设置 - 增加风场数量选择
         st.markdown("**🎯 基础参数设置**")
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
             # 修改这里：使用 st.session_state 来保存和读取风场数量
             n_farms = st.slider("风场数量", 1, 5, st.session_state.n_farms, help="选择要建设的风电场数量")
@@ -78,9 +79,6 @@ def strategy_optimization_page():
             n_turbines = st.slider("单场风机数", 1, 10, st.session_state.n_turbines_per_farm,
                                    help="每个风电场安装的风机数量")
             st.session_state.n_turbines_per_farm = n_turbines
-
-        with col3:
-            cost_weight = st.slider("成本权重", 0.1, 2.0, 1.0, 0.1, help="成本在优化中的重要性")
 
         # 计算总风机数量
         total_turbines = n_farms * n_turbines
@@ -113,23 +111,14 @@ def strategy_optimization_page():
         st.markdown("**🔋 储能系统参数**")
         col6, col7, col8 = st.columns(3)
         with col6:
-            # 根据风场数量动态调整储能容量
-            base_storage = 40
-            storage_per_farm = 20
-            recommended_storage = base_storage + (n_farms - 1) * storage_per_farm
-            storage_capacity = st.slider("储能容量 (MWh)", 1, 200, recommended_storage,
-                                         help=f"推荐值: {recommended_storage}MWh ({n_farms}个风场)")
+            storage_capacity = st.slider("储能容量 (MWh)", 1, 100, 60)
         with col7:
-            base_power = 30
-            power_per_farm = 15
-            recommended_power = base_power + (n_farms - 1) * power_per_farm
-            max_power = st.slider("最大功率 (MW)", 1, 80, recommended_power,
-                                  help=f"推荐值: {recommended_power}MW ({n_farms}个风场)")
+            max_power = st.slider("最大功率 (MW)", 1, 60, 30)
         with col8:
             base_grid = 50
             grid_per_farm = 25
             recommended_grid = base_grid + (n_farms - 1) * grid_per_farm
-            grid_capacity = st.slider("电网容量 (MW)", 10, 150, 50,
+            grid_capacity = st.slider("电网容量 (MW)", 10, 30, 20,
                                       help=f"推荐值: {recommended_grid}MW ({n_farms}个风场)")
 
         # 功率变化率参数
@@ -142,7 +131,6 @@ def strategy_optimization_page():
             'n_farms': n_farms,
             'n_turbines_per_farm': n_turbines,
             'total_turbines': total_turbines,
-            'cost_weight': cost_weight,
             'max_slope': 35,
             'max_road_distance': 100,
             'min_residential_distance': 60,
@@ -320,6 +308,9 @@ def strategy_optimization_page():
 
         # 显示多风场特定的分析结果
         display_optimization_result(result, df)
+
+        # display_energy_storage_performance(result, df)
+        main()
 
 
 # ======================================================

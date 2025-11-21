@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from shapely.geometry import Point
 from src.utils.create_map import create_maale_gilboa_base_map
 from src.utils.plotting_functions import create_convergence_chart, create_wind_farm_tables, create_wind_resource_tables, \
-    create_optimization_comparison_table
+    create_optimization_comparison_table, create_wind_speed_histogram
 
 
 # 显示优化结果 - 数据分析部分
@@ -88,7 +88,7 @@ def display_optimization_result(result, df):
         fitness_value = result.get('best_fitness') or result.get('fitness') or result.get('best_score') or '未知'
         st.metric("最优适应度值", f"{fitness_value:.2f}")
 
-    # 空间过滤 - 只保留Ma'ale Gilboa范围内的风电场（用于地图显示，但不影响数据分析）
+    # 空间过滤 - 只保留奉节县范围内的风电场（用于地图显示，但不影响数据分析）
     base_map = create_maale_gilboa_base_map()
     if base_map:
         wind_farm_in_fengjie = wind_farm_fengjie[
@@ -98,9 +98,9 @@ def display_optimization_result(result, df):
         # 显示位置统计信息
         if len(wind_farm_fengjie) != len(wind_farm_in_fengjie):
             outside_count = len(wind_farm_fengjie) - len(wind_farm_in_fengjie)
-            st.info(f"📍 {outside_count} 个风机在Ma'ale Gilboa边界外（仍包含在分析中）")
+            st.info(f"📍 {outside_count} 个风机在奉节县边界外（仍包含在分析中）")
 
-        # 对于地图显示使用Ma'ale Gilboa内的风电场，但数据分析使用全部风电场
+        # 对于地图显示使用奉节县内的风电场，但数据分析使用全部风电场
         display_wind_farm = wind_farm_fengjie  # 使用全部风电场进行数据分析
     else:
         display_wind_farm = wind_farm_fengjie
@@ -120,20 +120,29 @@ def display_optimization_result(result, df):
 
     # 🔧 修改：将所有详细分析内容放在下拉框中
     with st.expander("📈 详细优化分析与数据表格（点击展开）", expanded=False):
+        # 🔧 新增：风速分布直方图（放在优化对比表格之前）
+        st.markdown("#### 🌬️ 风速分布分析")
+
+        # 计算基准数据（随机样本作为对比）
+        baseline_data = calculate_baseline_data(df, len(wind_farm_fengjie))
+
+        # 创建风速分布图表
+        create_wind_speed_histogram(wind_farm_fengjie, baseline_data)
+
         # 优化前后性能指标对比
-        st.markdown("#### 优化算法性能指标对比")
+        st.markdown("#### 📈 优化算法性能指标对比")
 
         # 计算优化后的各项指标
         optimized_metrics = calculate_optimized_metrics(wind_farm_fengjie, power_results)
 
-        # 生成基准指标（模拟优化前的数据）
-        baseline_metrics = generate_baseline_metrics(optimized_metrics)
+        # 计算基准指标（使用原始数据集中的随机样本作为对比）
+        baseline_metrics = calculate_baseline_metrics(df, len(wind_farm_fengjie))
 
         # 创建对比表格
         create_optimization_comparison_table(baseline_metrics, optimized_metrics)
 
         # 风场详细数据统计
-        st.markdown("#### 风场详细数据统计")
+        st.markdown("#### 📊 风场详细数据统计")
 
         # 获取风场数量
         n_farms = st.session_state.get('n_farms', 2)
@@ -143,10 +152,24 @@ def display_optimization_result(result, df):
         create_wind_farm_tables(wind_farm_fengjie, n_farms, n_turbines_per_farm)
 
         # 风能资源性能表格
-        st.markdown("#### 风能资源性能分析")
+        st.markdown("#### 🌬️ 风能资源性能分析")
 
         # 使用绘图函数创建风能资源性能表格
         create_wind_resource_tables(wind_farm_fengjie, n_farms, n_turbines_per_farm)
+
+
+def calculate_baseline_data(df, sample_size):
+    """计算基准数据（随机样本）"""
+    if df.empty or sample_size <= 0:
+        return None
+
+    # 从原始数据集中随机选择相同数量的样本作为基准
+    if len(df) > sample_size:
+        baseline_sample = df.sample(n=sample_size, random_state=42)
+    else:
+        baseline_sample = df.copy()
+
+    return baseline_sample
 
 
 def calculate_optimized_metrics(wind_farm_df, power_results):
@@ -185,23 +208,12 @@ def calculate_optimized_metrics(wind_farm_df, power_results):
     if 'water_distance' in wind_farm_df.columns:
         metrics['到水体平均距离'] = wind_farm_df['water_distance'].mean()
 
-    # 成本指标
-    if 'cost' in wind_farm_df.columns:
-        metrics['平均成本'] = wind_farm_df['cost'].mean()
-        metrics['总成本'] = wind_farm_df['cost'].sum()
-
     # 发电量指标（从power_results获取）
     if power_results:
         metrics['年发电量'] = power_results.get('total_annual_generation_gwh', 0)
         metrics['总装机容量'] = power_results.get('total_capacity_mw', 0)
         metrics['平均容量因数'] = power_results.get('average_capacity_factor', 0) * 100  # 转换为百分比
         metrics['等效满发小时'] = power_results.get('equivalent_full_load_hours', 0)
-
-        # 经济指标
-        economic = power_results.get('economic_analysis', {})
-        metrics['总投资'] = economic.get('total_investment', 0) / 1e8  # 转换为亿元
-        metrics['年收益'] = economic.get('annual_revenue', 0) / 1e6  # 转换为百万元
-        metrics['投资回收期'] = economic.get('payback_period', 0)
 
     # 风能资源指标
     air_density = 1.225
@@ -211,50 +223,24 @@ def calculate_optimized_metrics(wind_farm_df, power_results):
     return metrics
 
 
-def generate_baseline_metrics(optimized_metrics):
-    """基于优化后的指标生成基准（优化前）指标"""
-    baseline = optimized_metrics.copy()
+def calculate_baseline_metrics(df, sample_size):
+    """计算基准指标（使用原始数据集中的随机样本）"""
+    if df.empty or sample_size <= 0:
+        return {}
 
-    # 定义各项指标的改进比例（模拟优化前的较差情况）
-    improvement_rates = {
-        '平均风速': -0.15,  # 优化前低15%
-        '最大风速': -0.12,
-        '最小风速': -0.10,
-        '平均坡度': 0.40,  # 优化前坡度大40%
-        '最大坡度': 0.35,
-        '平均海拔': 0.08,  # 优化前海拔高8%
-        '到道路平均距离': 0.25,  # 优化前距离远25%
-        '到居民区平均距离': -0.15,  # 优化前距离近15%（不好）
-        '到水体平均距离': 0.20,
-        '平均成本': 0.18,  # 优化前成本高18%
-        '总成本': 0.18,
-        '年发电量': -0.22,  # 优化前发电量低22%
-        '平均容量因数': -0.22,
-        '等效满发小时': -0.22,
-        '风能密度': -0.38,  # 由于风速立方关系，风能密度下降更多
-        '年收益': -0.22,
-        '投资回收期': 0.25  # 优化前回收期长25%
-    }
+    # 从原始数据集中随机选择相同数量的样本作为基准
+    if len(df) > sample_size:
+        baseline_sample = df.sample(n=sample_size, random_state=42)
+    else:
+        baseline_sample = df.copy()
 
-    # 应用改进比例生成基准指标
-    for key, rate in improvement_rates.items():
-        if key in baseline:
-            if isinstance(baseline[key], (int, float)):
-                if key == '投资回收期':  # 投资回收期越长越不好
-                    baseline[key] = baseline[key] * (1 + abs(rate))
-                else:
-                    # 对于大多数指标，优化前数值较差
-                    if rate < 0:  # 负值表示优化前数值较小
-                        baseline[key] = baseline[key] * (1 + rate)
-                    else:  # 正值表示优化前数值较大
-                        baseline[key] = baseline[key] * (1 + rate)
+    # 计算基准样本的发电量
+    baseline_power_results = calculate_real_power_generation(baseline_sample)
 
-    # 特殊处理非数值指标
-    if '海拔范围' in baseline:
-        # 简单处理海拔范围字符串
-        baseline['海拔范围'] = "较高海拔范围"
+    # 计算基准指标
+    baseline_metrics = calculate_optimized_metrics(baseline_sample, baseline_power_results)
 
-    return baseline
+    return baseline_metrics
 
 
 def calculate_real_power_generation(wind_farm_df):
@@ -314,17 +300,6 @@ def calculate_real_power_generation(wind_farm_df):
     total_capacity = len(wind_farm_df) * TURBINE_CONFIG['rated_power']
     equivalent_full_load_hours = total_annual_generation / total_capacity if total_capacity > 0 else 0
 
-    # 计算真实的经济指标
-    electricity_price = 0.4  # 元/kWh
-    investment_per_kw = 6000  # 元/kW
-    om_cost_per_kw = 150  # 元/kW/年
-
-    total_investment = total_capacity * investment_per_kw
-    annual_revenue = total_annual_generation * electricity_price
-    annual_om_cost = total_capacity * om_cost_per_kw
-    annual_profit = annual_revenue - annual_om_cost
-    payback_period = total_investment / annual_profit if annual_profit > 0 else float('inf')
-
     return {
         'total_annual_generation_kwh': total_annual_generation,
         'total_annual_generation_mwh': total_annual_generation / 1000,
@@ -335,16 +310,7 @@ def calculate_real_power_generation(wind_farm_df):
         'equivalent_full_load_hours': equivalent_full_load_hours,
         'annual_generation_per_turbine': annual_generation_per_turbine,
         'capacity_factors': capacity_factors,
-        'turbine_config': TURBINE_CONFIG,
-        'economic_analysis': {
-            'total_investment': total_investment,
-            'annual_revenue': annual_revenue,
-            'annual_om_cost': annual_om_cost,
-            'annual_profit': annual_profit,
-            'payback_period': payback_period,
-            'electricity_price': electricity_price,
-            'investment_per_kw': investment_per_kw
-        }
+        'turbine_config': TURBINE_CONFIG
     }
 
 

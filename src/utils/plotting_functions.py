@@ -2,12 +2,14 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
+from scipy.stats import weibull_min
+from scipy.special import gamma
 
 
 def create_optimization_comparison_table(baseline_metrics, optimized_metrics):
     """创建优化前后性能指标对比表格（只显示改善的指标）"""
 
-    # 定义指标分类和显示格式 - 只保留发电性能、风资源、经济性指标
+    # 定义指标分类和显示格式 - 去掉经济性指标
     metric_categories = {
         '发电性能指标': [
             ('年发电量', 'GWh', 3),
@@ -21,13 +23,6 @@ def create_optimization_comparison_table(baseline_metrics, optimized_metrics):
             ('最大风速', 'm/s', 1),
             ('最小风速', 'm/s', 1),
             ('风速标准差', 'm/s', 2)
-        ],
-        '经济性指标': [
-            ('平均成本', '万元', 1),
-            ('总成本', '万元', 1),
-            ('总投资', '亿元', 2),
-            ('年收益', '百万元', 1),
-            ('投资回收期', '年', 1)
         ]
     }
 
@@ -64,17 +59,12 @@ def create_optimization_comparison_table(baseline_metrics, optimized_metrics):
                     else:
                         improvement = 0
 
-                    # 确定状态
-                    if '成本' in metric_name or '投资回收期' in metric_name:
-                        # 这些指标越小越好
-                        is_improved = improvement < 0
-                    else:
-                        # 其他指标越大越好
-                        is_improved = improvement > 0
+                    # 确定状态 - 所有指标都是越大越好
+                    is_improved = improvement > 0
 
                     if is_improved:
                         status = "✅ 改善"
-                        improvement_display = f"{improvement:.1f}%" if improvement < 0 else f"+{improvement:.1f}%"
+                        improvement_display = f"+{improvement:.1f}%"
 
                         category_metrics_data.append({
                             '指标': metric_name,
@@ -209,7 +199,7 @@ def create_wind_farm_tables(wind_farm_fengjie, n_farms, n_turbines_per_farm):
             min_lon = farm_turbines['lon'].min() if 'lon' in farm_turbines.columns else 'N/A'
             max_lon = farm_turbines['lon'].max() if 'lon' in farm_turbines.columns else 'N/A'
 
-            # 计算风场的各项统计数据
+            # 计算风场的各项统计数据 - 去掉成本相关
             farm_stats = {
                 '风场编号': f'风场{i + 1}',
                 '风机数量': len(farm_turbines),
@@ -228,8 +218,7 @@ def create_wind_farm_tables(wind_farm_fengjie, n_farms, n_turbines_per_farm):
                 '到水体平均距离(m)': farm_turbines[
                     'water_distance'].mean() if 'water_distance' in farm_turbines.columns else 'N/A',
                 '平均风速(m/s)': farm_turbines[
-                    'predicted_wind_speed'].mean() if 'predicted_wind_speed' in farm_turbines.columns else 'N/A',
-                '平均成本': farm_turbines['cost'].mean() if 'cost' in farm_turbines.columns else 'N/A'
+                    'predicted_wind_speed'].mean() if 'predicted_wind_speed' in farm_turbines.columns else 'N/A'
             }
 
             # 格式化数值
@@ -241,7 +230,7 @@ def create_wind_farm_tables(wind_farm_fengjie, n_farms, n_turbines_per_farm):
                         farm_stats[key] = f"{value:.0f}"
                     elif '海拔' in key:
                         farm_stats[key] = f"{value:.0f}"
-                    elif '坡度' in key or '成本' in key:
+                    elif '坡度' in key:
                         farm_stats[key] = f"{value:.1f}"
                     elif '风速' in key:
                         farm_stats[key] = f"{value:.2f}"
@@ -255,12 +244,12 @@ def create_wind_farm_tables(wind_farm_fengjie, n_farms, n_turbines_per_farm):
         # 设置索引为风场编号
         farm_df.set_index('风场编号', inplace=True)
 
-        # 重新排列列的顺序，让坐标信息在前面
+        # 重新排列列的顺序，让坐标信息在前面 - 去掉成本列
         column_order = [
             '风机数量', '中心纬度', '中心经度', '纬度范围', '经度范围',
             '平均海拔(m)', '平均坡度(°)', '最大坡度(°)', '最小坡度(°)',
             '到道路平均距离(m)', '到居民区平均距离(m)', '到水体平均距离(m)',
-            '平均风速(m/s)', '平均成本'
+            '平均风速(m/s)'
         ]
 
         # 只保留实际存在的列
@@ -405,3 +394,137 @@ def create_wind_resource_tables(wind_farm_fengjie, n_farms, n_turbines_per_farm)
         )
     else:
         st.info("🌬️ 暂无风能资源性能数据可显示")
+
+
+def create_wind_speed_histogram(wind_farm_fengjie, original_data=None, baseline_data=None):
+    """创建风速分布直方图和Weibull分布拟合 - 使用原始数据集"""
+
+    # 使用原始数据集来分析整体风速分布，而不是只使用选中的风机
+    if original_data is not None and 'predicted_wind_speed' in original_data.columns:
+        analysis_data = original_data
+        data_source = "原始数据集"
+    else:
+        analysis_data = wind_farm_fengjie
+        data_source = "优化后风场"
+
+    if 'predicted_wind_speed' not in analysis_data.columns:
+        st.warning("⚠️ 数据中缺少风速数据，无法绘制风速分布")
+        return
+
+    # 获取风速数据
+    all_wind_speeds = analysis_data['predicted_wind_speed'].dropna()
+    optimized_wind_speeds = wind_farm_fengjie['predicted_wind_speed'].dropna()
+
+    if len(all_wind_speeds) == 0:
+        st.warning("⚠️ 没有有效的风速数据")
+        return
+
+    # 创建子图
+    fig = go.Figure()
+
+    # 计算整体数据的直方图
+    hist_all, bin_edges = np.histogram(all_wind_speeds, bins=20, density=True)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    # 添加整体数据直方图
+    fig.add_trace(go.Bar(
+        x=bin_centers,
+        y=hist_all,
+        name=f'{data_source}风速分布',
+        opacity=0.5,
+        marker_color='lightgray'
+    ))
+
+    # 添加优化后数据的直方图（如果数据量足够）
+    if len(optimized_wind_speeds) > 0:
+        hist_optimized, _ = np.histogram(optimized_wind_speeds, bins=bin_edges, density=True)
+        fig.add_trace(go.Bar(
+            x=bin_centers,
+            y=hist_optimized,
+            name='优化后风机风速',
+            opacity=0.8,
+            marker_color='lightblue'
+        ))
+
+    # Weibull分布拟合（使用整体数据）
+    try:
+        shape, loc, scale = weibull_min.fit(all_wind_speeds, floc=0)
+        x_weibull = np.linspace(0, all_wind_speeds.max() * 1.2, 100)
+        y_weibull = weibull_min.pdf(x_weibull, shape, loc, scale)
+
+        fig.add_trace(go.Scatter(
+            x=x_weibull,
+            y=y_weibull,
+            mode='lines',
+            name=f'Weibull分布拟合 (k={shape:.2f}, λ={scale:.2f})',
+            line=dict(color='red', width=3),
+            opacity=0.8
+        ))
+
+    except Exception as e:
+        st.warning(f"⚠️ Weibull分布拟合失败: {str(e)}")
+
+    # 更新图表布局
+    fig.update_layout(
+        title='🌬️ 风速分布直方图与Weibull分布拟合',
+        xaxis_title='风速 (m/s)',
+        yaxis_title='概率密度',
+        height=400,
+        template="plotly_white",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+        bargap=0.1
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 显示统计信息
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("整体平均风速", f"{all_wind_speeds.mean():.2f} m/s")
+    with col2:
+        st.metric("整体风速标准差", f"{all_wind_speeds.std():.2f} m/s")
+    with col3:
+        st.metric("优化后平均风速",
+                  f"{optimized_wind_speeds.mean():.2f} m/s" if len(optimized_wind_speeds) > 0 else "N/A")
+    with col4:
+        st.metric("优化提升",
+                  f"+{(optimized_wind_speeds.mean() - all_wind_speeds.mean()) / all_wind_speeds.mean() * 100:.1f}%" if len(
+                      optimized_wind_speeds) > 0 else "N/A")
+
+    # 显示风速分布特征 - 使用整体数据
+    st.markdown("**📊 整体风速分布特征**")
+
+    wind_ranges = [
+        (0, 3, "无效风速 (<3 m/s)"),
+        (3, 5, "低风速 (3-5 m/s)"),
+        (5, 8, "中等风速 (5-8 m/s)"),
+        (8, 11, "高风速 (8-11 m/s)"),
+        (11, 25, "额定风速 (11-25 m/s)"),
+        (25, float('inf'), "切出风速 (>25 m/s)")
+    ]
+
+    range_data = []
+    for min_speed, max_speed, label in wind_ranges:
+        if max_speed == float('inf'):
+            count_all = len(all_wind_speeds[all_wind_speeds >= min_speed])
+            count_opt = len(optimized_wind_speeds[optimized_wind_speeds >= min_speed]) if len(
+                optimized_wind_speeds) > 0 else 0
+        else:
+            count_all = len(all_wind_speeds[(all_wind_speeds >= min_speed) & (all_wind_speeds < max_speed)])
+            count_opt = len(optimized_wind_speeds[
+                                (optimized_wind_speeds >= min_speed) & (optimized_wind_speeds < max_speed)]) if len(
+                optimized_wind_speeds) > 0 else 0
+
+        percentage_all = (count_all / len(all_wind_speeds)) * 100
+        percentage_opt = (count_opt / len(optimized_wind_speeds)) * 100 if len(optimized_wind_speeds) > 0 else 0
+
+        range_data.append({
+            '风速区间': label,
+            '整体点位数量': count_all,
+            '整体占比 (%)': f"{percentage_all:.1f}%",
+            '优化风机数量': count_opt,
+            '优化占比 (%)': f"{percentage_opt:.1f}%" if len(optimized_wind_speeds) > 0 else "N/A"
+        })
+
+    range_df = pd.DataFrame(range_data)
+    st.dataframe(range_df, use_container_width=True, hide_index=True)
