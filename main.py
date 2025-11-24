@@ -3,6 +3,7 @@ import warnings
 
 from src.optimization.strategy_optimization import strategy_optimization_page
 from src.prediction.ai_prediction import ai_prediction_page
+from src.utils.comparison_page import prediction_optimization_comparison_page
 from src.utils.data_analysis import data_analysis_page
 from src.utils.data_import import data_import_page
 
@@ -27,7 +28,7 @@ def main():
     app_mode = st.sidebar.selectbox(
         "系统功能",
         ["🏠 系统首页", "📊 数据导入", "📈 数据分析",
-         "🤖 风速预测", "⚡ 布局优化"]
+         "🤖 风速预测", "⚡ 布局优化", "📊 预测+优化对比"]
     )
 
     if app_mode == "🏠 系统首页":
@@ -40,6 +41,8 @@ def main():
         ai_prediction_page()
     elif app_mode == "⚡ 布局优化":
         strategy_optimization_page()
+    elif app_mode == "📊 预测+优化对比":
+        prediction_optimization_comparison_page()
 
 
 # ========================= 首页内容 =========================

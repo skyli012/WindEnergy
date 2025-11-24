@@ -1,15 +1,13 @@
 import geopandas as gpd
 import streamlit as st
-import pandas as pd
-import numpy as np
 from shapely.geometry import Point
 
-from src.optimization.algorithm_convergence_curve import call_optimize_function
-from src.utils.check_data import check_data_quality
+from src.optimization.algorithm_convergence_curve import call_optimize_function_with_all_strategies, \
+    calculate_wind_utilization
 from src.utils.create_map import display_maale_gilboa_standalone_map, display_environment, display_optimization_map, \
     create_maale_gilboa_base_map
-from src.visualization.energy_storage_display import display_energy_storage_performance, main
-from src.visualization.opt_result_show import display_optimization_result
+from src.visualization.opt_result_show import display_optimization_result, display_wind_utilization_analysis
+from src.visualization.storage_schedule_display import display_storage_schedule_analysis
 
 
 # ======================================================
@@ -17,12 +15,14 @@ from src.visualization.opt_result_show import display_optimization_result
 # ======================================================
 def strategy_optimization_page():
     # 页面标题 - 更紧凑
-    st.markdown("### 🌬️ 风电场选址优化与储能调度系统")
-    st.caption("基于真实优化算法计算 · 奉节县风电场布局优化 · 储能消纳策略分析")
+    st.markdown("### 🌬️ 风电场选址优化系统")
+    st.caption("基于真实优化算法计算 · 山地风电场布局优化")
 
     # 初始化 session state
     if 'current_page' not in st.session_state:
         st.session_state.current_page = "map"
+    if 'algorithm_comparison_results' not in st.session_state:
+        st.session_state.algorithm_comparison_results = {}
 
     # 初始化风场数量
     if 'n_farms' not in st.session_state:
@@ -38,7 +38,12 @@ def strategy_optimization_page():
         if st.session_state.current_page == "map":
             display_maale_gilboa_standalone_map()
             if "windfarm_data" not in st.session_state:
-                st.info("📁 请先上传风速预测数据以查看风能分布")
+                # 检查是否有从数据导入页面导入的数据
+                if 'dataset' in st.session_state:
+                    # 自动处理数据
+                    process_imported_data()
+                else:
+                    st.info("📁 请先在数据导入页面导入风速预测数据")
 
         elif st.session_state.current_page == "wind":
             if "windfarm_data" in st.session_state:
@@ -46,7 +51,7 @@ def strategy_optimization_page():
                 if "optimization_result" not in st.session_state:
                     st.info("⚙️ 数据已就绪，可点击'开始优化'进行风电场布局优化")
             else:
-                st.warning("⚠️ 请先上传数据文件")
+                st.warning("⚠️ 请先在数据导入页面导入数据")
                 st.session_state.current_page = "map"
                 st.rerun()
 
@@ -106,25 +111,15 @@ def strategy_optimization_page():
         min_downwind_distance = DOWNWIND_DISTANCE_RATIO * TURBINE_DIAMETER  # 米
         min_crosswind_distance = CROSSWIND_DISTANCE_RATIO * TURBINE_DIAMETER  # 米
 
-
-        # 储能系统参数
-        st.markdown("**🔋 储能系统参数**")
-        col6, col7, col8 = st.columns(3)
-        with col6:
-            storage_capacity = st.slider("储能容量 (MWh)", 1, 100, 60)
-        with col7:
-            max_power = st.slider("最大功率 (MW)", 1, 60, 30)
-        with col8:
-            base_grid = 50
-            grid_per_farm = 25
-            recommended_grid = base_grid + (n_farms - 1) * grid_per_farm
-            grid_capacity = st.slider("电网容量 (MW)", 10, 30, 20,
-                                      help=f"推荐值: {recommended_grid}MW ({n_farms}个风场)")
-
-        # 功率变化率参数
-        st.markdown("**📊 运行参数**")
-        max_ramp_rate = st.slider("最大功率变化率 (MW/min)", 1, 30, 5 + n_farms,
-                                  help="多风场运行时需要更高的变化率容限")
+        # 新增：风能利用率权重设置
+        st.markdown("**📈 优化目标权重**")
+        col_weight1, col_weight2 = st.columns(2)
+        with col_weight1:
+            wind_speed_weight = st.slider("风速权重", 0.1, 1.0, 0.6, 0.1,
+                                          help="风速在综合评分中的权重")
+        with col_weight2:
+            utilization_weight = st.slider("利用率权重", 0.1, 1.0, 0.4, 0.1,
+                                           help="风能利用率在综合评分中的权重")
 
         # 固定约束条件值 - 使用合理的固定风场间距和风机间距
         algorithm_params = {
@@ -141,10 +136,8 @@ def strategy_optimization_page():
             'min_downwind_distance': min_downwind_distance,  # 主风向间距
             'min_crosswind_distance': min_crosswind_distance,  # 侧向间距
             'turbine_diameter': TURBINE_DIAMETER,  # 风机直径
-            'storage_capacity': storage_capacity * 1000,  # 转换为kWh
-            'max_power': max_power * 1000,  # 转换为kW
-            'grid_capacity': grid_capacity * 1000,  # 转换为kW
-            'max_ramp_rate': max_ramp_rate,
+            'wind_speed_weight': wind_speed_weight,
+            'utilization_weight': utilization_weight,
         }
 
         # 算法选择单独一行
@@ -215,57 +208,24 @@ def strategy_optimization_page():
                     algorithm_params['time_limit'] = st.slider("时间限制(秒)", 10, 600, recommended_time,
                                                                help=f"推荐值: {recommended_time}秒")
 
-        # 文件上传和处理
+        # 数据状态显示
         st.markdown("<hr style='margin: 8px 0;'>", unsafe_allow_html=True)
-        uploaded_file = st.file_uploader("📂 上传风速预测数据", type=["csv"])
 
-        # 在处理文件上传的部分添加边界过滤
-        if uploaded_file is not None:
-            if 'last_uploaded_file' not in st.session_state or st.session_state.last_uploaded_file != uploaded_file.name:
-                df = pd.read_csv(uploaded_file)
-
-                # 添加必要的列
-                if "predicted_wind_speed" in df.columns:
-                    df["wind_power_density"] = 0.5 * 1.225 * (df["predicted_wind_speed"] ** 3)
-
-                # 首先过滤奉节县边界内的点
-                base_map = create_maale_gilboa_base_map()
-                if base_map:
-                    # 创建几何点并检查是否在边界内
-                    geometries = [Point(lon, lat) for lon, lat in zip(df['lon'], df['lat'])]
-                    gdf = gpd.GeoDataFrame(df, geometry=geometries, crs="EPSG:4326")
-
-                    # 过滤边界内的点
-                    within_boundary = gdf.within(base_map['geometry'])
-                    df = df[within_boundary].copy().reset_index(drop=True)
-
-                    st.info(f"🗺️ 过滤后：{len(df)} 个点在奉节县边界内")
-
-                # 然后设置有效点位
-                df["valid"] = (
-                        (df["predicted_wind_speed"] >= 5.0) &
-                        (df["slope"] <= 35) &
-                        (df["elevation"] >= 150) & (df["elevation"] <= 1600)
-                )
-
-                st.session_state["windfarm_data"] = df
-                st.session_state.last_uploaded_file = uploaded_file.name
-                st.success("✅ 数据加载成功")
-
-                # 显示数据质量检查
-                check_data_quality(df)
-
-                # 立即重定向到风能分布页面
-                st.session_state.current_page = "wind"
+        # 检查数据状态
+        if 'dataset' in st.session_state and "windfarm_data" not in st.session_state:
+            st.info("📊 检测到已导入数据，点击按钮处理数据")
+            if st.button("🔄 处理导入的数据", use_container_width=True):
+                process_imported_data()
                 st.rerun()
+
+        elif "windfarm_data" in st.session_state:
+            st.success("✅ 数据已就绪")
+            df = st.session_state["windfarm_data"]
+
+            # 显示数据基本信息
+            valid_count = df['valid'].sum() if 'valid' in df.columns else 0
         else:
-            # 如果文件被删除，清除相关状态
-            if 'last_uploaded_file' in st.session_state:
-                del st.session_state.last_uploaded_file
-            if 'windfarm_data' in st.session_state:
-                del st.session_state.windfarm_data
-            if 'optimization_result' in st.session_state:
-                del st.session_state.optimization_result
+            st.info("📁 请在数据导入页面先上传数据文件")
 
         # 优化按钮
         st.markdown("<hr style='margin: 8px 0;'>", unsafe_allow_html=True)
@@ -275,30 +235,31 @@ def strategy_optimization_page():
             if "predicted_wind_speed" in df.columns and df["predicted_wind_speed"].std() < 0.5:
                 st.warning("⚠️ 风速数据变化较小，可能影响优化效果")
 
-            # 显示有效点位信息
-            valid_count = df['valid'].sum() if 'valid' in df.columns else 0
-            if valid_count < total_turbines:
-                st.error(f"❌ 有效点位数量({valid_count})少于目标风机数量({total_turbines})")
-                st.info("💡 建议：减少风场数量或单场风机数，或检查数据约束条件")
-            else:
-                st.success(f"✅ 有效点位数量({valid_count})满足目标风机数量({total_turbines})")
+            # 多算法对比选项
+            st.markdown("**📊 算法对比选项**")
+            compare_algorithms = st.checkbox("运行多算法对比",
+                                             help="同时运行遗传算法、模拟退火、粒子群优化进行对比分析（不包含PuLP求解器）")
 
             if st.button("🚀 开始优化计算", use_container_width=True, type="primary"):
                 with st.spinner(f"正在计算{n_farms}个风电场的最优布局..."):
                     try:
-                        # 使用真实优化函数调用
-                        result = call_optimize_function(df, algo, algorithm_params)
-                        st.session_state["optimization_result"] = result
-                        st.success(f"🎯 {n_farms}个风电场优化完成")
-                        st.session_state.current_page = "result"
-                        st.rerun()
+                        if compare_algorithms:
+                            # 运行多算法对比（不包含PuLP）
+                            run_algorithm_comparison(df, algorithm_params, n_farms)
+                        else:
+                            # 单个算法优化
+                            result = call_optimize_function_with_all_strategies(df, algo, algorithm_params)
+                            st.session_state["optimization_result"] = result
+                            st.success(f"🎯 {n_farms}个风电场优化完成")
+                            st.session_state.current_page = "result"
+                            st.rerun()
                     except Exception as e:
                         st.error(f"❌ 优化计算失败: {str(e)}")
                         st.info("💡 建议：尝试减少风场数量或使用更宽松的约束条件")
         else:
             st.button("🚀 开始优化计算", use_container_width=True, disabled=True)
 
-    # ========== 优化结果详情展示在页面下端 ==========
+    # 在优化结果显示部分确保正确调用
     if st.session_state.current_page == "result" and "optimization_result" in st.session_state:
         st.markdown("---")
         st.markdown("#### 📊 多风场优化结果分析")
@@ -309,8 +270,250 @@ def strategy_optimization_page():
         # 显示多风场特定的分析结果
         display_optimization_result(result, df)
 
-        # display_energy_storage_performance(result, df)
-        main()
+        # 显示风能利用率分析
+        display_wind_utilization_analysis(result, df)
+
+        # 显示算法对比结果（如果有）
+        if st.session_state.algorithm_comparison_results:
+            display_algorithm_comparison()
+
+
+def run_algorithm_comparison(df, algorithm_params, n_farms):
+    """运行多算法对比分析 - 不包含PuLP优化求解器"""
+    # 只包含元启发式算法，不包含数学规划求解器
+    algorithms = ["遗传算法", "模拟退火算法", "粒子群优化算法"]
+    comparison_results = {}
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    for i, algo in enumerate(algorithms):
+        status_text.text(f"正在运行 {algo}...")
+
+        try:
+            # 复制参数以避免冲突
+            current_params = algorithm_params.copy()
+
+            # 运行优化
+            result = call_optimize_function_with_all_strategies(df, algo, current_params)
+
+            # 存储结果
+            comparison_results[algo] = {
+                'result': result,
+                'fitness': result.get('best_fitness', 0),
+                'computation_time': result.get('computation_time', 0),
+                'algorithm': algo,
+                'n_farms': n_farms
+            }
+
+            st.success(f"✅ {algo} 完成")
+
+        except Exception as e:
+            st.error(f"❌ {algo} 运行失败: {str(e)}")
+            comparison_results[algo] = {
+                'result': None,
+                'fitness': 0,
+                'computation_time': 0,
+                'algorithm': algo,
+                'error': str(e)
+            }
+
+        progress_bar.progress((i + 1) / len(algorithms))
+
+    progress_bar.empty()
+    status_text.empty()
+
+    # 保存对比结果
+    st.session_state.algorithm_comparison_results = comparison_results
+
+    # 选择最佳结果作为主要显示结果
+    best_algo = None
+    best_fitness = -1
+    for algo, data in comparison_results.items():
+        if data['result'] and data['fitness'] > best_fitness:
+            best_fitness = data['fitness']
+            best_algo = algo
+
+    if best_algo:
+        st.session_state["optimization_result"] = comparison_results[best_algo]['result']
+        st.success(f"🏆 最佳算法: {best_algo} (适应度: {best_fitness:.3f})")
+
+        # 显示算法对比说明
+        st.info("""
+        💡 **算法对比说明**：
+        - 对比包含：遗传算法、模拟退火、粒子群优化
+        - 未包含PuLP求解器（数学规划方法，适用场景不同）
+        - 如需使用PuLP求解器，请单独选择运行
+        """)
+
+        st.session_state.current_page = "result"
+        st.rerun()
+
+
+def display_algorithm_comparison():
+    """显示算法对比分析结果"""
+    st.markdown("---")
+    st.markdown("#### 📈 优化算法对比分析")
+
+    # 添加对比范围说明
+    st.info("""
+    🔍 **对比范围说明**：
+    - ✅ 包含：遗传算法、模拟退火算法、粒子群优化算法
+    - ⚠️ 未包含：PuLP优化求解器（数学规划方法，适用场景不同）
+    - 📊 对比指标：适应度得分、计算时间、发电性能
+    """)
+
+    comparison_results = st.session_state.algorithm_comparison_results
+
+    # 创建对比表格
+    comparison_data = []
+    for algo, data in comparison_results.items():
+        if data['result']:
+            power_results = data['result'].get('power_results', {})
+            comparison_data.append({
+                '算法': algo,
+                '适应度得分': f"{data['fitness']:.3f}",
+                '计算时间(秒)': f"{data['computation_time']:.2f}",
+                '年发电量(GWh)': f"{power_results.get('total_annual_generation_gwh', 0):.2f}" if power_results else "N/A",
+                '容量因数(%)': f"{power_results.get('average_capacity_factor', 0) * 100:.1f}" if power_results else "N/A",
+                '状态': '✅ 成功'
+            })
+        else:
+            comparison_data.append({
+                '算法': algo,
+                '适应度得分': '0.000',
+                '计算时间(秒)': '0.00',
+                '年发电量(GWh)': 'N/A',
+                '容量因数(%)': 'N/A',
+                '状态': f'❌ 失败: {data.get("error", "未知错误")}'
+            })
+
+    # 显示对比表格
+    import pandas as pd
+    comparison_df = pd.DataFrame(comparison_data)
+    st.dataframe(comparison_df, use_container_width=True)
+
+    # 性能对比图表
+    st.markdown("**📊 算法性能对比**")
+
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    # 准备数据
+    algorithms = []
+    fitness_scores = []
+    computation_times = []
+
+    for algo, data in comparison_results.items():
+        if data['result']:
+            algorithms.append(algo)
+            fitness_scores.append(data['fitness'])
+            computation_times.append(data['computation_time'])
+
+    if algorithms:
+        # 创建子图
+        fig = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=('适应度得分对比', '计算时间对比(秒)'),
+            specs=[[{"type": "bar"}, {"type": "bar"}]]
+        )
+
+        # 适应度得分
+        fig.add_trace(
+            go.Bar(name='适应度得分', x=algorithms, y=fitness_scores,
+                   marker_color='lightblue', text=[f'{score:.3f}' for score in fitness_scores],
+                   textposition='auto'),
+            row=1, col=1
+        )
+
+        # 计算时间
+        fig.add_trace(
+            go.Bar(name='计算时间', x=algorithms, y=computation_times,
+                   marker_color='lightcoral', text=[f'{time:.1f}s' for time in computation_times],
+                   textposition='auto'),
+            row=1, col=2
+        )
+
+        fig.update_layout(
+            height=400,
+            showlegend=False,
+            title_text="优化算法性能对比"
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # 算法推荐
+        st.markdown("**💡 算法推荐**")
+
+        # 根据性能指标给出推荐
+        best_fitness_algo = max(zip(fitness_scores, algorithms))[1]
+        fastest_algo = min(zip(computation_times, algorithms))[1]
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("最佳效果算法", best_fitness_algo)
+        with col2:
+            st.metric("最快算法", fastest_algo)
+
+        # 综合推荐
+        if best_fitness_algo == fastest_algo:
+            st.success(f"🎯 推荐使用 {best_fitness_algo} - 既高效又快速")
+        else:
+            st.info(f"⚖️ 平衡选择: 追求效果选 {best_fitness_algo}, 追求速度选 {fastest_algo}")
+
+
+def process_imported_data():
+    """处理从数据导入页面导入的数据"""
+    if 'dataset' not in st.session_state:
+        st.error("❌ 没有找到导入的数据")
+        return
+
+    df = st.session_state['dataset'].copy()
+
+    # 添加必要的列
+    if "predicted_wind_speed" in df.columns:
+        df["wind_power_density"] = 0.5 * 1.225 * (df["predicted_wind_speed"] ** 3)
+
+        # 计算风能利用率指标
+        df["wind_utilization_rate"] = calculate_wind_utilization(df["predicted_wind_speed"])
+
+        # 计算综合评分（使用默认权重）
+        max_wind_speed = df["predicted_wind_speed"].max()
+        max_utilization = df["wind_utilization_rate"].max()
+
+        # 归一化处理
+        df["normalized_wind_speed"] = df["predicted_wind_speed"] / max_wind_speed
+        df["normalized_utilization"] = df["wind_utilization_rate"] / max_utilization
+
+        # 综合评分（使用默认权重0.6和0.4）
+        df["composite_score"] = (
+                0.6 * df["normalized_wind_speed"] +
+                0.4 * df["normalized_utilization"]
+        )
+
+    # 过滤边界内的点（如果有边界数据）
+    base_map = create_maale_gilboa_base_map()
+    if base_map:
+        # 创建几何点并检查是否在边界内
+        geometries = [Point(lon, lat) for lon, lat in zip(df['lon'], df['lat'])]
+        gdf = gpd.GeoDataFrame(df, geometry=geometries, crs="EPSG:4326")
+
+        # 过滤边界内的点
+        within_boundary = gdf.within(base_map['geometry'])
+        df = df[within_boundary].copy().reset_index(drop=True)
+
+    # 设置有效点位
+    df["valid"] = (
+            (df["predicted_wind_speed"] >= 5.0) &
+            (df["slope"] <= 35) &
+            (df["elevation"] >= 150) & (df["elevation"] <= 1600) &
+            (df["composite_score"] >= 0.4)  # 综合评分阈值
+    )
+
+    st.session_state["windfarm_data"] = df
+
+    # 重定向到风能分布页面
+    st.session_state.current_page = "wind"
 
 
 # ======================================================

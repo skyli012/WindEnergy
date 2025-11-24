@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from shapely.geometry import Point
+
+from src.optimization.algorithm_convergence_curve import evaluate_solution_quality
 from src.utils.create_map import create_maale_gilboa_base_map
 from src.utils.plotting_functions import create_convergence_chart, create_wind_farm_tables, create_wind_resource_tables, \
     create_optimization_comparison_table, create_wind_speed_histogram
@@ -75,7 +77,7 @@ def display_optimization_result(result, df):
     wind_farm_fengjie = all_wind_farm  # 直接使用所有优化结果
 
     # 显示风电场统计
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)  # 改为4列
     with col1:
         st.metric("风电场风机总数", len(wind_farm_fengjie))
     with col2:
@@ -85,8 +87,11 @@ def display_optimization_result(result, df):
         else:
             st.metric("平均风速", "N/A")
     with col3:
-        fitness_value = result.get('best_fitness') or result.get('fitness') or result.get('best_score') or '未知'
+        fitness_value = result.get('best_fitness') or result.get('fitness') or result.get('best_score') or 0
         st.metric("最优适应度值", f"{fitness_value:.2f}")
+    with col4:
+        quality_rating = evaluate_solution_quality(fitness_value)
+        st.metric("质量评级", quality_rating)
 
     # 空间过滤 - 只保留奉节县范围内的风电场（用于地图显示，但不影响数据分析）
     base_map = create_maale_gilboa_base_map()
@@ -117,6 +122,8 @@ def display_optimization_result(result, df):
 
     # 使用绘图函数创建收敛图表
     create_convergence_chart(fitness_history)
+
+    st.markdown("#### 选址优化数据分析")
 
     # 🔧 修改：将所有详细分析内容放在下拉框中
     with st.expander("📈 详细优化分析与数据表格（点击展开）", expanded=False):
@@ -156,6 +163,42 @@ def display_optimization_result(result, df):
 
         # 使用绘图函数创建风能资源性能表格
         create_wind_resource_tables(wind_farm_fengjie, n_farms, n_turbines_per_farm)
+
+        # 🔧 新增：储能调度分析（放在最底部）
+        st.markdown("---")
+        st.markdown("#### ⚡ 储能调度分析")
+
+        # 检查是否有储能调度数据
+        if 'storage_results' in result or 'best_strategy' in result:
+            try:
+                # 导入储能调度显示函数
+                from src.visualization.storage_schedule_display import display_storage_schedule_analysis
+                # 显示储能调度分析
+                display_storage_schedule_analysis(result, df)
+            except ImportError:
+                st.warning("⚠️ 储能调度显示模块导入失败")
+            except Exception as e:
+                st.error(f"❌ 储能调度分析显示错误: {str(e)}")
+        else:
+            st.info("ℹ️ 当前优化结果不包含储能调度数据。要启用储能调度分析，请在优化参数中配置储能策略。")
+
+            # 显示如何启用储能调度的提示
+            with st.expander("💡 如何启用储能调度分析？"):
+                st.markdown("""
+                    要启用储能调度分析功能，请进行以下配置：
+
+                    1. **选择多策略优化**：在优化参数中选择"多策略优化"
+                    2. **配置储能参数**：
+                       - 储能容量 (kWh)
+                       - 最大充放电功率 (kW)
+                       - 电网容量 (kW)
+                    3. **选择储能策略**：
+                       - 平滑输出
+                       - 削峰填谷  
+                       - 混合模式
+
+                    启用后，系统将自动分析不同储能策略的效果并显示详细调度数据。
+                    """)
 
 
 def calculate_baseline_data(df, sample_size):
@@ -356,3 +399,55 @@ def check_data_quality_for_power_calculation(wind_farm_df):
         st.metric("风电场有效风速比例", f"{valid_ratio:.1f}%")
         if valid_ratio < 80:
             st.warning("部分点位风速过低")
+def display_wind_utilization_analysis(result, df):
+    """
+    显示风能利用率分析结果
+    """
+    # 获取优化结果中的风电场位置
+    if 'farm_locations' in result:
+        farm_locations = result['farm_locations']
+
+        # 计算每个风电场的平均利用率
+        utilization_data = []
+        for i, farm_loc in enumerate(farm_locations):
+            farm_df = df[df['lat'] == farm_loc[0]]  # 假设通过经纬度匹配
+            if not farm_df.empty:
+                avg_wind_speed = farm_df['predicted_wind_speed'].mean()
+                avg_utilization = farm_df['wind_utilization_rate'].mean()
+                composite_score = farm_df['composite_score'].mean()
+
+                utilization_data.append({
+                    '风场编号': i + 1,
+                    '平均风速(m/s)': f"{avg_wind_speed:.1f}",
+                    '风能利用率': f"{avg_utilization:.1%}",
+                    '综合评分': f"{composite_score:.3f}"
+                })
+
+        # 显示利用率表格
+        if utilization_data:
+            utilization_df = pd.DataFrame(utilization_data)
+            st.table(utilization_df)
+
+            # 显示优化目标权重信息
+            st.info(f"优化目标权重：风速({result.get('wind_speed_weight', 0.6)}) : "
+                    f"利用率({result.get('utilization_weight', 0.4)})")
+
+def calculate_wind_utilization(wind_speed_series):
+    """
+    计算风能利用率指标
+    基于风速的稳定性、可利用小时数等因素
+    """
+    # 风速在风机工作范围内的比例（3-25 m/s）
+    operational_hours = ((wind_speed_series >= 3) & (wind_speed_series <= 25)).mean()
+
+    # 风速稳定性（标准差越小越稳定）
+    wind_std = wind_speed_series.std()
+    stability = 1 / (1 + wind_std)  # 标准化稳定性指标
+
+    # 高风速利用率（>7 m/s 的比例）
+    high_wind_hours = (wind_speed_series >= 7).mean()
+
+    # 综合利用率指标
+    utilization_rate = 0.5 * operational_hours + 0.3 * stability + 0.2 * high_wind_hours
+
+    return utilization_rate

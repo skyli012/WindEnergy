@@ -2,11 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.svm import SVR
 import plotly.graph_objects as go
 import plotly.express as px
 import plotly.subplots as sp
@@ -27,28 +26,6 @@ try:
     HAS_TENSORFLOW = True
 except Exception:
     HAS_TENSORFLOW = False
-
-# 可选库
-try:
-    from xgboost import XGBRegressor
-
-    HAS_XGBOOST = True
-except Exception:
-    HAS_XGBOOST = False
-
-try:
-    from lightgbm import LGBMRegressor
-
-    HAS_LIGHTGBM = True
-except Exception:
-    HAS_LIGHTGBM = False
-
-try:
-    from catboost import CatBoostRegressor
-
-    HAS_CATBOOST = True
-except Exception:
-    HAS_CATBOOST = False
 
 
 # ===================== 深度学习模型构建函数 =====================
@@ -106,11 +83,11 @@ def prepare_sequences_for_dl(X, y, time_steps=10):
 
 # ===================== 主页面 =====================
 def ai_prediction_page():
-    st.title("🤖 Szeged 风速AI预测分析系统")
+    st.title("🤖 风电场风速AI预测分析系统")
 
     # 数据状态检查
     if 'dataset' not in st.session_state:
-        st.warning("⚠️ 请先在数据导入页面导入气象数据")
+        st.warning("⚠️ 请先在数据导入页面导入风电场数据")
         return
 
     df = st.session_state['dataset'].copy()
@@ -128,7 +105,7 @@ def ai_prediction_page():
 
     # 时间特征处理
     datetime_col = next(
-        (col for col in df.columns if 'time' in col.lower() or 'datatime' in col.lower() or 'date' in col.lower()),
+        (col for col in df.columns if 'time' in col.lower() or 'timestamp' in col.lower() or 'date' in col.lower()),
         None)
     if datetime_col:
         df[datetime_col] = pd.to_datetime(df[datetime_col], errors='coerce')
@@ -142,11 +119,11 @@ def ai_prediction_page():
         st.error("❌ 未找到时间列")
         return
 
-    # 目标变量
-    target_candidates = ['wind_speed_ms']
+    # 目标变量 - 修改为您的字段名
+    target_candidates = ['predicted_wind_speed']
     target_column = next((col for col in target_candidates if col in df.columns), None)
     if not target_column:
-        st.error("❌ 未找到目标变量")
+        st.error("❌ 未找到目标变量 predicted_wind_speed")
         return
 
     # 数据概览
@@ -160,7 +137,7 @@ def ai_prediction_page():
         st.metric("风速标准差", f"{df[target_column].std():.2f} m/s")
     with col4:
         st.metric("数据时间范围",
-                  f"{df[datetime_col].min().strftime('%Y-%m')} 至 {df[datetime_col].max().strftime('%Y-%m')}")
+                  f"{df[datetime_col].min().strftime('%Y-%m-%d')} 至 {df[datetime_col].max().strftime('%Y-%m-%d')}")
 
     if analysis_mode == "单模型预测":
         single_model_analysis(df, datetime_col, target_column)
@@ -174,10 +151,15 @@ def ai_prediction_page():
 def single_model_analysis(df, datetime_col, target_column):
     st.subheader("🎯 单模型预测分析")
 
-    # 特征选择
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    exclude_cols = [target_column]
-    feature_candidates = [c for c in numeric_cols if c not in exclude_cols]
+    # 只使用指定的特征字段
+    available_features = [
+        'point_id', 'lat', 'lon', 'elevation', 'slope',
+        'relative_humidity', 'temperature_c', 'wind_direction',
+        'gust_direction', 'gust_speed', 'wind_direction_std', 'rainfall_mm'
+    ]
+
+    # 筛选出数据中实际存在的特征
+    feature_candidates = [col for col in available_features if col in df.columns]
 
     col1, col2 = st.columns([2, 1])
 
@@ -186,23 +168,19 @@ def single_model_analysis(df, datetime_col, target_column):
             "选择特征变量",
             options=feature_candidates,
             default=[col for col in [
-                'temperature_c', 'humidity', 'pressure_millibars', 'wind_bearing_degrees',
-                'visibility_ms', 'hour', 'month', 'dayofyear', 'season'
+                'temperature_c', 'relative_humidity', 'wind_direction',
+                'gust_speed', 'elevation', 'slope'
             ] if col in feature_candidates]
         )
 
     with col2:
-        # 模型选择 - 添加深度学习模型
-        model_options = ["随机森林", "梯度提升", "XGBoost", "LightGBM", "CatBoost",
-                         "线性回归", "支持向量机", "LSTM", "GRU"]
+        # 模型选择 - 只保留四种算法
+        model_options = ["随机森林", "线性回归", "LSTM", "GRU"]
 
         # 检查库可用性
         available_models = []
         for model in model_options:
-            if model in ["XGBoost", "LightGBM", "CatBoost"]:
-                if globals().get(f'HAS_{model.upper()}'):
-                    available_models.append(model)
-            elif model in ["LSTM", "GRU"]:
+            if model in ["LSTM", "GRU"]:
                 if HAS_TENSORFLOW:
                     available_models.append(model)
             else:
@@ -249,18 +227,8 @@ def single_model_analysis(df, datetime_col, target_column):
 
             if model_option == "随机森林":
                 model = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
-            elif model_option == "梯度提升":
-                model = GradientBoostingRegressor(n_estimators=200, learning_rate=0.05, random_state=42)
-            elif model_option == "XGBoost":
-                model = XGBRegressor(n_estimators=200, random_state=42, verbosity=0, n_jobs=-1)
-            elif model_option == "LightGBM":
-                model = LGBMRegressor(n_estimators=200, learning_rate=0.05, n_jobs=-1, random_state=42)
-            elif model_option == "CatBoost":
-                model = CatBoostRegressor(iterations=200, learning_rate=0.05, verbose=0, random_state=42)
             elif model_option == "线性回归":
                 model = LinearRegression()
-            elif model_option == "支持向量机":
-                model = SVR(kernel='rbf', C=1.0, epsilon=0.1)
             elif model_option == "LSTM":
                 # 准备时间序列数据
                 X_train_seq, y_train_seq = prepare_sequences_for_dl(X_train_scaled, y_train.values, time_steps)
@@ -372,31 +340,31 @@ def single_model_analysis(df, datetime_col, target_column):
 def multi_model_comparison(df, datetime_col, target_column):
     st.subheader("⚖️ 多模型对比分析")
 
-    # 特征选择
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    exclude_cols = [target_column]
-    feature_candidates = [c for c in numeric_cols if c not in exclude_cols]
+    # 只使用指定的特征字段
+    available_features = [
+        'point_id', 'lat', 'lon', 'elevation', 'slope',
+        'relative_humidity', 'temperature_c', 'wind_direction',
+        'gust_direction', 'gust_speed', 'wind_direction_std', 'rainfall_mm'
+    ]
+
+    feature_candidates = [col for col in available_features if col in df.columns]
 
     selected_features = st.multiselect(
         "选择特征变量",
         options=feature_candidates,
         default=[col for col in [
-            'temperature_c', 'humidity', 'pressure_millibars', 'wind_bearing_degrees',
-            'visibility_ms', 'hour', 'month', 'dayofyear', 'season'
+            'temperature_c', 'relative_humidity', 'wind_direction',
+            'gust_speed', 'elevation', 'slope'
         ] if col in feature_candidates]
     )
 
-    # 模型选择 - 添加深度学习模型
-    model_options = ["随机森林", "梯度提升", "XGBoost", "LightGBM", "CatBoost",
-                     "线性回归", "支持向量机", "LSTM", "GRU"]
+    # 模型选择 - 只保留四种算法
+    model_options = ["随机森林", "线性回归", "LSTM", "GRU"]
 
     # 检查库可用性
     available_models = []
     for model in model_options:
-        if model in ["XGBoost", "LightGBM", "CatBoost"]:
-            if globals().get(f'HAS_{model.upper()}'):
-                available_models.append(model)
-        elif model in ["LSTM", "GRU"]:
+        if model in ["LSTM", "GRU"]:
             if HAS_TENSORFLOW:
                 available_models.append(model)
         else:
@@ -405,7 +373,7 @@ def multi_model_comparison(df, datetime_col, target_column):
     selected_algorithms = st.multiselect(
         "选择对比算法",
         options=available_models,
-        default=available_models[:4]  # 默认选择前4个可用模型
+        default=available_models  # 默认选择所有可用模型
     )
 
     # 深度学习参数
@@ -458,18 +426,8 @@ def multi_model_comparison(df, datetime_col, target_column):
 
                     if algo == "随机森林":
                         model = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
-                    elif algo == "梯度提升":
-                        model = GradientBoostingRegressor(n_estimators=200, learning_rate=0.05, random_state=42)
-                    elif algo == "XGBoost":
-                        model = XGBRegressor(n_estimators=200, random_state=42, verbosity=0, n_jobs=-1)
-                    elif algo == "LightGBM":
-                        model = LGBMRegressor(n_estimators=200, learning_rate=0.05, n_jobs=-1, random_state=42)
-                    elif algo == "CatBoost":
-                        model = CatBoostRegressor(iterations=200, learning_rate=0.05, verbose=0, random_state=42)
                     elif algo == "线性回归":
                         model = LinearRegression()
-                    elif algo == "支持向量机":
-                        model = SVR(kernel='rbf', C=1.0, epsilon=0.1)
                     elif algo == "LSTM":
                         # 准备时间序列数据
                         X_train_seq, y_train_seq = prepare_sequences_for_dl(
@@ -567,276 +525,6 @@ def multi_model_comparison(df, datetime_col, target_column):
             )
 
 
-def display_comparison_results(comparison_results, feature_importances, y_true, predictions, selected_features, models,
-                               X_test_scaled, training_histories=None):
-    """显示多模型对比结果"""
-    st.subheader("📋 性能对比表")
-    df_comparison = pd.DataFrame(comparison_results)
-    st.dataframe(df_comparison.style.format({
-        "MAE": "{:.3f}", "RMSE": "{:.3f}", "R²": "{:.4f}", "训练时间(秒)": "{:.2f}"
-    }), use_container_width=True)
-
-    # 深度学习训练历史可视化
-    if training_histories:
-        st.subheader("📈 深度学习模型训练过程")
-        dl_algorithms = [algo for algo in training_histories.keys() if algo in ["LSTM", "GRU"]]
-
-        if dl_algorithms:
-            fig_history = go.Figure()
-            for algo in dl_algorithms:
-                history = training_histories[algo]
-                fig_history.add_trace(go.Scatter(
-                    y=history.history['loss'],
-                    mode='lines',
-                    name=f'{algo} - 训练损失'
-                ))
-                fig_history.add_trace(go.Scatter(
-                    y=history.history['val_loss'],
-                    mode='lines',
-                    name=f'{algo} - 验证损失',
-                    line=dict(dash='dash')
-                ))
-
-            fig_history.update_layout(
-                title="深度学习模型训练损失曲线",
-                xaxis_title="训练轮数",
-                yaxis_title="损失值",
-                height=400
-            )
-            st.plotly_chart(fig_history, use_container_width=True)
-
-    # 特征重要性对比
-    if feature_importances:
-        st.subheader("🎯 特征重要性对比")
-        algorithms = list(feature_importances.keys())
-
-        # 选择前5个特征进行对比
-        top_features = set()
-        for algo in algorithms:
-            top_features.update(feature_importances[algo].head(5)['feature'].tolist())
-        top_features = list(top_features)[:8]  # 最多显示8个特征
-
-        fig = go.Figure()
-        for algo in algorithms:
-            algo_importance = []
-            for feature in top_features:
-                feature_row = feature_importances[algo][feature_importances[algo]['feature'] == feature]
-                if len(feature_row) > 0:
-                    algo_importance.append(feature_row['importance'].values[0])
-                else:
-                    algo_importance.append(0)
-
-            fig.add_trace(go.Bar(
-                name=algo,
-                x=top_features,
-                y=algo_importance,
-                text=[f'{x:.3f}' for x in algo_importance],
-                textposition='auto'
-            ))
-
-        fig.update_layout(
-            barmode='group',
-            title="Top 特征重要性对比",
-            xaxis_title="特征",
-            yaxis_title="重要性分数",
-            height=500
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    # ================== 预测 vs 真实值散点图对比 ==================
-    st.markdown("### 📊 预测效果对比图")
-
-    # 创建散点图
-    fig_scatter = go.Figure()
-
-    # 颜色列表
-    colors = px.colors.qualitative.Set3
-
-    # 为每个算法添加散点
-    for i, (algo, y_pred) in enumerate(predictions.items()):
-        # 下采样以避免过度拥挤
-        sample_size = min(1000, len(y_true))
-        if len(y_true) > sample_size:
-            try:
-                indices = np.random.choice(len(y_true), size=sample_size, replace=False)
-                if hasattr(y_true, 'iloc'):
-                    y_true_sample = y_true.iloc[indices]
-                else:
-                    y_true_sample = y_true[indices]
-                y_pred_sample = y_pred[indices]
-            except Exception as e:
-                st.warning(f"采样失败: {str(e)}，使用全部数据")
-                y_true_sample = y_true
-                y_pred_sample = y_pred
-        else:
-            y_true_sample = y_true
-            y_pred_sample = y_pred
-
-        # 计算该算法的R²
-        algo_r2 = r2_score(y_true_sample, y_pred_sample)
-
-        fig_scatter.add_trace(go.Scatter(
-            x=y_true_sample,
-            y=y_pred_sample,
-            mode='markers',
-            name=f'{algo} (R²={algo_r2:.3f})',
-            marker=dict(
-                color=colors[i % len(colors)],
-                opacity=0.6,
-                size=6
-            ),
-            hovertemplate='<b>真实值</b>: %{x:.2f}<br><b>预测值</b>: %{y:.2f}<br><b>算法</b>: ' + algo + '<extra></extra>'
-        ))
-
-    # 添加理想拟合线
-    min_val = min(min(y_true), min([min(pred) for pred in predictions.values()]))
-    max_val = max(max(y_true), max([max(pred) for pred in predictions.values()]))
-    fig_scatter.add_trace(go.Scatter(
-        x=[min_val, max_val],
-        y=[min_val, max_val],
-        mode='lines',
-        name='理想拟合线 (y=x)',
-        line=dict(dash='dash', color='black', width=2),
-        hovertemplate='理想拟合线<extra></extra>'
-    ))
-
-    fig_scatter.update_layout(
-        title="预测值 vs 真实值散点图对比",
-        xaxis_title="真实风速 (m/s)",
-        yaxis_title="预测风速 (m/s)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=600
-    )
-    st.plotly_chart(fig_scatter, use_container_width=True)
-
-    # ================== 性能指标柱状图对比 ==================
-    st.markdown("### 📈 性能指标可视化对比")
-
-    tab1, tab2, tab3 = st.tabs(["MAE & RMSE", "R² 决定系数", "训练时间"])
-
-    with tab1:
-        fig_metrics = go.Figure()
-        algorithms = [result["算法"] for result in comparison_results]
-        mae_values = [result["MAE"] for result in comparison_results]
-        rmse_values = [result["RMSE"] for result in comparison_results]
-
-        fig_metrics.add_trace(go.Bar(
-            name='MAE',
-            x=algorithms,
-            y=mae_values,
-            marker_color='#FF6B6B',
-            text=[f'{x:.3f}' for x in mae_values],
-            textposition='auto'
-        ))
-        fig_metrics.add_trace(go.Bar(
-            name='RMSE',
-            x=algorithms,
-            y=rmse_values,
-            marker_color='#4ECDC4',
-            text=[f'{x:.3f}' for x in rmse_values],
-            textposition='auto'
-        ))
-
-        fig_metrics.update_layout(
-            title="MAE 和 RMSE 对比（值越小越好）",
-            barmode='group',
-            xaxis_title="算法",
-            yaxis_title="误差值"
-        )
-        st.plotly_chart(fig_metrics, use_container_width=True)
-
-    with tab2:
-        fig_r2 = go.Figure()
-        r2_values = [result["R²"] for result in comparison_results]
-
-        # 根据R²值设置颜色（越高越好）
-        colors_r2 = ['#FF6B6B' if x < 0.5 else '#4ECDC4' if x < 0.8 else '#1A936F' for x in r2_values]
-
-        fig_r2.add_trace(go.Bar(
-            x=algorithms,
-            y=r2_values,
-            marker_color=colors_r2,
-            text=[f'{x:.4f}' for x in r2_values],
-            textposition='auto'
-        ))
-
-        fig_r2.update_layout(
-            title="R² 决定系数对比（值越接近1越好）",
-            xaxis_title="算法",
-            yaxis_title="R² 值",
-            yaxis_range=[0, 1]
-        )
-        # 添加参考线
-        fig_r2.add_hline(y=0.5, line_dash="dash", line_color="orange", annotation_text="一般水平")
-        fig_r2.add_hline(y=0.8, line_dash="dash", line_color="green", annotation_text="优秀水平")
-
-        st.plotly_chart(fig_r2, use_container_width=True)
-
-    with tab3:
-        fig_time = go.Figure()
-        time_values = [result["训练时间(秒)"] for result in comparison_results]
-
-        fig_time.add_trace(go.Bar(
-            x=algorithms,
-            y=time_values,
-            marker_color='#6A0572',
-            text=[f'{x:.2f}s' for x in time_values],
-            textposition='auto'
-        ))
-
-        fig_time.update_layout(
-            title="训练时间对比（秒）",
-            xaxis_title="算法",
-            yaxis_title="训练时间 (秒)"
-        )
-        st.plotly_chart(fig_time, use_container_width=True)
-
-    # ================== 算法排名和建议 ==================
-    st.markdown("### 🏆 算法性能排名")
-
-    # 按R²排名
-    ranked_by_r2 = sorted(comparison_results, key=lambda x: x['R²'], reverse=True)
-    # 按MAE排名
-    ranked_by_mae = sorted(comparison_results, key=lambda x: x['MAE'])
-    # 按训练时间排名
-    ranked_by_time = sorted(comparison_results, key=lambda x: x['训练时间(秒)'])
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.markdown("**🥇 精度排名 (R²)**")
-        for i, result in enumerate(ranked_by_r2):
-            medal = ["🥇", "🥈", "🥉"][i] if i < 3 else f"{i + 1}."
-            st.write(f"{medal} {result['算法']}: {result['R²']:.4f}")
-
-    with col2:
-        st.markdown("**🎯 误差排名 (MAE)**")
-        for i, result in enumerate(ranked_by_mae):
-            medal = ["🥇", "🥈", "🥉"][i] if i < 3 else f"{i + 1}."
-            st.write(f"{medal} {result['算法']}: {result['MAE']:.3f}")
-
-    with col3:
-        st.markdown("**⚡ 速度排名**")
-        for i, result in enumerate(ranked_by_time):
-            medal = ["🥇", "🥈", "🥉"][i] if i < 3 else f"{i + 1}."
-            st.write(f"{medal} {result['算法']}: {result['训练时间(秒)']:.2f}s")
-
-    # 总结建议
-    st.markdown("### 💡 算法选择建议")
-    best_model = ranked_by_r2[0]['算法']
-    best_r2 = ranked_by_r2[0]['R²']
-    fastest_model = ranked_by_time[0]['算法']
-
-    st.info(f"""
-    **推荐算法**: **{best_model}** (R² = {best_r2:.4f})
-
-    - 🎯 **追求最高精度**: 选择 **{best_model}**
-    - ⚡ **注重训练速度**: 选择 **{fastest_model}**
-    - ⚖️ **要求平衡性**: 建议尝试 **{ranked_by_r2[1]['算法'] if len(ranked_by_r2) > 1 else best_model}**
-    - 📊 **综合考虑**: 查看各指标选择最适合业务场景的算法
-    """)
-
-
 # ===================== 深度分析 =====================
 def deep_analysis(df, datetime_col, target_column):
     st.subheader("🔍 深度分析模式")
@@ -853,8 +541,14 @@ def deep_analysis(df, datetime_col, target_column):
     # 特征分析
     st.subheader("📈 特征分析")
 
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    feature_candidates = [c for c in numeric_cols if c != target_column]
+    # 只使用指定的特征字段
+    available_features = [
+        'point_id', 'lat', 'lon', 'elevation', 'slope',
+        'relative_humidity', 'temperature_c', 'wind_direction',
+        'gust_direction', 'gust_speed', 'wind_direction_std', 'rainfall_mm'
+    ]
+
+    feature_candidates = [col for col in available_features if col in df.columns]
 
     # 特征与目标的相关性
     if len(feature_candidates) > 0:
@@ -1281,3 +975,274 @@ def display_single_model_results(results, feature_importance, permutation_import
                 st.metric("稳定性评级", stability)
         else:
             st.info("深度学习模型诊断信息已在训练过程标签页中显示")
+
+
+# ===================== 多模型对比结果显示函数 =====================
+def display_comparison_results(comparison_results, feature_importances, y_true, predictions, selected_features, models,
+                               X_test_scaled, training_histories=None):
+    """显示多模型对比结果"""
+    st.subheader("📋 性能对比表")
+    df_comparison = pd.DataFrame(comparison_results)
+    st.dataframe(df_comparison.style.format({
+        "MAE": "{:.3f}", "RMSE": "{:.3f}", "R²": "{:.4f}", "训练时间(秒)": "{:.2f}"
+    }), use_container_width=True)
+
+    # 深度学习训练历史可视化
+    if training_histories:
+        st.subheader("📈 深度学习模型训练过程")
+        dl_algorithms = [algo for algo in training_histories.keys() if algo in ["LSTM", "GRU"]]
+
+        if dl_algorithms:
+            fig_history = go.Figure()
+            for algo in dl_algorithms:
+                history = training_histories[algo]
+                fig_history.add_trace(go.Scatter(
+                    y=history.history['loss'],
+                    mode='lines',
+                    name=f'{algo} - 训练损失'
+                ))
+                fig_history.add_trace(go.Scatter(
+                    y=history.history['val_loss'],
+                    mode='lines',
+                    name=f'{algo} - 验证损失',
+                    line=dict(dash='dash')
+                ))
+
+            fig_history.update_layout(
+                title="深度学习模型训练损失曲线",
+                xaxis_title="训练轮数",
+                yaxis_title="损失值",
+                height=400
+            )
+            st.plotly_chart(fig_history, use_container_width=True)
+
+    # 特征重要性对比
+    if feature_importances:
+        st.subheader("🎯 特征重要性对比")
+        algorithms = list(feature_importances.keys())
+
+        # 选择前5个特征进行对比
+        top_features = set()
+        for algo in algorithms:
+            top_features.update(feature_importances[algo].head(5)['feature'].tolist())
+        top_features = list(top_features)[:8]  # 最多显示8个特征
+
+        fig = go.Figure()
+        for algo in algorithms:
+            algo_importance = []
+            for feature in top_features:
+                feature_row = feature_importances[algo][feature_importances[algo]['feature'] == feature]
+                if len(feature_row) > 0:
+                    algo_importance.append(feature_row['importance'].values[0])
+                else:
+                    algo_importance.append(0)
+
+            fig.add_trace(go.Bar(
+                name=algo,
+                x=top_features,
+                y=algo_importance,
+                text=[f'{x:.3f}' for x in algo_importance],
+                textposition='auto'
+            ))
+
+        fig.update_layout(
+            barmode='group',
+            title="Top 特征重要性对比",
+            xaxis_title="特征",
+            yaxis_title="重要性分数",
+            height=500
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ================== 预测 vs 真实值散点图对比 ==================
+    st.markdown("### 📊 预测效果对比图")
+
+    # 创建散点图
+    fig_scatter = go.Figure()
+
+    # 颜色列表
+    colors = px.colors.qualitative.Set3
+
+    # 为每个算法添加散点
+    for i, (algo, y_pred) in enumerate(predictions.items()):
+        # 下采样以避免过度拥挤
+        sample_size = min(1000, len(y_true))
+        if len(y_true) > sample_size:
+            try:
+                indices = np.random.choice(len(y_true), size=sample_size, replace=False)
+                if hasattr(y_true, 'iloc'):
+                    y_true_sample = y_true.iloc[indices]
+                else:
+                    y_true_sample = y_true[indices]
+                y_pred_sample = y_pred[indices]
+            except Exception as e:
+                st.warning(f"采样失败: {str(e)}，使用全部数据")
+                y_true_sample = y_true
+                y_pred_sample = y_pred
+        else:
+            y_true_sample = y_true
+            y_pred_sample = y_pred
+
+        # 计算该算法的R²
+        algo_r2 = r2_score(y_true_sample, y_pred_sample)
+
+        fig_scatter.add_trace(go.Scatter(
+            x=y_true_sample,
+            y=y_pred_sample,
+            mode='markers',
+            name=f'{algo} (R²={algo_r2:.3f})',
+            marker=dict(
+                color=colors[i % len(colors)],
+                opacity=0.6,
+                size=6
+            ),
+            hovertemplate='<b>真实值</b>: %{x:.2f}<br><b>预测值</b>: %{y:.2f}<br><b>算法</b>: ' + algo + '<extra></extra>'
+        ))
+
+    # 添加理想拟合线
+    min_val = min(min(y_true), min([min(pred) for pred in predictions.values()]))
+    max_val = max(max(y_true), max([max(pred) for pred in predictions.values()]))
+    fig_scatter.add_trace(go.Scatter(
+        x=[min_val, max_val],
+        y=[min_val, max_val],
+        mode='lines',
+        name='理想拟合线 (y=x)',
+        line=dict(dash='dash', color='black', width=2),
+        hovertemplate='理想拟合线<extra></extra>'
+    ))
+
+    fig_scatter.update_layout(
+        title="预测值 vs 真实值散点图对比",
+        xaxis_title="真实风速 (m/s)",
+        yaxis_title="预测风速 (m/s)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=600
+    )
+    st.plotly_chart(fig_scatter, use_container_width=True)
+
+    # ================== 性能指标柱状图对比 ==================
+    st.markdown("### 📈 性能指标可视化对比")
+
+    tab1, tab2, tab3 = st.tabs(["MAE & RMSE", "R² 决定系数", "训练时间"])
+
+    with tab1:
+        fig_metrics = go.Figure()
+        algorithms = [result["算法"] for result in comparison_results]
+        mae_values = [result["MAE"] for result in comparison_results]
+        rmse_values = [result["RMSE"] for result in comparison_results]
+
+        fig_metrics.add_trace(go.Bar(
+            name='MAE',
+            x=algorithms,
+            y=mae_values,
+            marker_color='#FF6B6B',
+            text=[f'{x:.3f}' for x in mae_values],
+            textposition='auto'
+        ))
+        fig_metrics.add_trace(go.Bar(
+            name='RMSE',
+            x=algorithms,
+            y=rmse_values,
+            marker_color='#4ECDC4',
+            text=[f'{x:.3f}' for x in rmse_values],
+            textposition='auto'
+        ))
+
+        fig_metrics.update_layout(
+            title="MAE 和 RMSE 对比（值越小越好）",
+            barmode='group',
+            xaxis_title="算法",
+            yaxis_title="误差值"
+        )
+        st.plotly_chart(fig_metrics, use_container_width=True)
+
+    with tab2:
+        fig_r2 = go.Figure()
+        r2_values = [result["R²"] for result in comparison_results]
+
+        # 根据R²值设置颜色（越高越好）
+        colors_r2 = ['#FF6B6B' if x < 0.5 else '#4ECDC4' if x < 0.8 else '#1A936F' for x in r2_values]
+
+        fig_r2.add_trace(go.Bar(
+            x=algorithms,
+            y=r2_values,
+            marker_color=colors_r2,
+            text=[f'{x:.4f}' for x in r2_values],
+            textposition='auto'
+        ))
+
+        fig_r2.update_layout(
+            title="R² 决定系数对比（值越接近1越好）",
+            xaxis_title="算法",
+            yaxis_title="R² 值",
+            yaxis_range=[0, 1]
+        )
+        # 添加参考线
+        fig_r2.add_hline(y=0.5, line_dash="dash", line_color="orange", annotation_text="一般水平")
+        fig_r2.add_hline(y=0.8, line_dash="dash", line_color="green", annotation_text="优秀水平")
+
+        st.plotly_chart(fig_r2, use_container_width=True)
+
+    with tab3:
+        fig_time = go.Figure()
+        time_values = [result["训练时间(秒)"] for result in comparison_results]
+
+        fig_time.add_trace(go.Bar(
+            x=algorithms,
+            y=time_values,
+            marker_color='#6A0572',
+            text=[f'{x:.2f}s' for x in time_values],
+            textposition='auto'
+        ))
+
+        fig_time.update_layout(
+            title="训练时间对比（秒）",
+            xaxis_title="算法",
+            yaxis_title="训练时间 (秒)"
+        )
+        st.plotly_chart(fig_time, use_container_width=True)
+
+    # ================== 算法排名和建议 ==================
+    st.markdown("### 🏆 算法性能排名")
+
+    # 按R²排名
+    ranked_by_r2 = sorted(comparison_results, key=lambda x: x['R²'], reverse=True)
+    # 按MAE排名
+    ranked_by_mae = sorted(comparison_results, key=lambda x: x['MAE'])
+    # 按训练时间排名
+    ranked_by_time = sorted(comparison_results, key=lambda x: x['训练时间(秒)'])
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("**🥇 精度排名 (R²)**")
+        for i, result in enumerate(ranked_by_r2):
+            medal = ["🥇", "🥈", "🥉"][i] if i < 3 else f"{i + 1}."
+            st.write(f"{medal} {result['算法']}: {result['R²']:.4f}")
+
+    with col2:
+        st.markdown("**🎯 误差排名 (MAE)**")
+        for i, result in enumerate(ranked_by_mae):
+            medal = ["🥇", "🥈", "🥉"][i] if i < 3 else f"{i + 1}."
+            st.write(f"{medal} {result['算法']}: {result['MAE']:.3f}")
+
+    with col3:
+        st.markdown("**⚡ 速度排名**")
+        for i, result in enumerate(ranked_by_time):
+            medal = ["🥇", "🥈", "🥉"][i] if i < 3 else f"{i + 1}."
+            st.write(f"{medal} {result['算法']}: {result['训练时间(秒)']:.2f}s")
+
+    # 总结建议
+    st.markdown("### 💡 算法选择建议")
+    best_model = ranked_by_r2[0]['算法']
+    best_r2 = ranked_by_r2[0]['R²']
+    fastest_model = ranked_by_time[0]['算法']
+
+    st.info(f"""
+    **推荐算法**: **{best_model}** (R² = {best_r2:.4f})
+
+    - 🎯 **追求最高精度**: 选择 **{best_model}**
+    - ⚡ **注重训练速度**: 选择 **{fastest_model}**
+    - ⚖️ **要求平衡性**: 建议尝试 **{ranked_by_r2[1]['算法'] if len(ranked_by_r2) > 1 else best_model}**
+    - 📊 **综合考虑**: 查看各指标选择最适合业务场景的算法
+    """)
