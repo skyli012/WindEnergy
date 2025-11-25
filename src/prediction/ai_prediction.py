@@ -168,8 +168,8 @@ def single_model_analysis(df, datetime_col, target_column):
             "选择特征变量",
             options=feature_candidates,
             default=[col for col in [
-                'temperature_c', 'relative_humidity', 'wind_direction',
-                'gust_speed', 'elevation', 'slope'
+                'relative_humidity', 'temperature_c', 'wind_direction',
+        'gust_direction', 'gust_speed', 'wind_direction_std', 'rainfall_mm'
             ] if col in feature_candidates]
         )
 

@@ -303,7 +303,7 @@ def run_algorithm_comparison(df, algorithm_params, n_farms):
                 'fitness': result.get('best_fitness', 0),
                 'computation_time': result.get('computation_time', 0),
                 'algorithm': algo,
-                'n_farms': n_farms
+                'n_farms': n_farms  
             }
 
             st.success(f"✅ {algo} 完成")

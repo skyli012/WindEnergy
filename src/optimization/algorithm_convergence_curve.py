@@ -388,10 +388,6 @@ def real_genetic_algorithm(df, n_turbines, pop_size=50, generations=100,
         'n_turbines_per_farm': n_turbines // kwargs.get('n_farms', 1)
     }
 
-    # 显示优化权重信息
-    st.info(f"优化权重：风速({result['optimization_weights']['wind_speed_weight']}) : "
-            f"利用率({result['optimization_weights']['utilization_weight']})")
-
     return result
 
 
@@ -740,8 +736,6 @@ def call_optimize_function_with_all_strategies(df, algo, algorithm_params):
     调用优化函数并测试所有储能策略 - 支持多风场
     """
     try:
-        st.info(f"🔧 开始多策略优化计算，使用 {algo} 算法...")
-
         # 测试不同的储能策略
         strategies = ['平滑输出', '削峰填谷', '混合模式']
         strategy_results = []
@@ -750,9 +744,16 @@ def call_optimize_function_with_all_strategies(df, algo, algorithm_params):
         best_fitness = -1
         best_strategy = None
 
+        # 创建进度条和状态文本
         progress_bar = st.progress(0)
+        status_text = st.empty()
 
         for i, strategy in enumerate(strategies):
+            # 更新进度状态
+            current_progress = (i + 1) / len(strategies)
+            status_text.text(f"🔄 正在测试储能策略: {strategy} ({i + 1}/{len(strategies)})")
+            progress_bar.progress(current_progress)
+
             # 更新策略参数
             current_params = algorithm_params.copy()
             current_params['storage_strategy'] = strategy
@@ -805,9 +806,9 @@ def call_optimize_function_with_all_strategies(df, algo, algorithm_params):
                 best_result = result
                 best_strategy = strategy
 
-            progress_bar.progress((i + 1) / len(strategies))
-
+        # 清理进度显示
         progress_bar.empty()
+        status_text.empty()
 
         # 将策略比较结果添加到最佳结果中
         if best_result:
