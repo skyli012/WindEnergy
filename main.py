@@ -9,39 +9,39 @@ from src.utils.data_import import data_import_page
 
 warnings.filterwarnings('ignore')
 
-# ========================= 页面设置 =========================
+# ========================= Page Configuration =========================
 st.set_page_config(
-    page_title="风速预测与风电场优化系统",
+    page_title="Wind Speed Prediction and Wind Farm Optimization System",
     page_icon="🌬️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 
-# ========================= 主程序入口 =========================
+# ========================= Main Application Entry =========================
 def main():
-    st.sidebar.title("🌬️ 风能研究平台")
+    st.sidebar.title("🌬️ Wind Energy Research Platform")
 
     st.sidebar.markdown("---")
-    st.sidebar.info("选择功能模块开始分析")
+    st.sidebar.info("Select a functional module to begin analysis")
 
     app_mode = st.sidebar.selectbox(
-        "系统功能",
-        ["🏠 系统首页", "📊 数据导入", "📈 数据分析",
-         "🤖 风速预测", "⚡ 布局优化", "📊 预测+优化对比"]
+        "System Functions",
+        ["System Home", "Data Import", "Data Analysis",
+         "Wind Speed Prediction", "Smart Layout Optimization", "Model Benchmarking"]
     )
 
-    if app_mode == "🏠 系统首页":
+    if app_mode == "System Home":
         show_home_page()
-    elif app_mode == "📊 数据导入":
+    elif app_mode == "Data Import":
         data_import_page()
-    elif app_mode == "📈 数据分析":
+    elif app_mode == "Data Analysis":
         data_analysis_page()
-    elif app_mode == "🤖 风速预测":
+    elif app_mode == "Wind Speed Prediction":
         ai_prediction_page()
-    elif app_mode == "⚡ 布局优化":
+    elif app_mode == "Smart Layout Optimization":
         strategy_optimization_page()
-    elif app_mode == "📊 预测+优化对比":
+    elif app_mode == "Model Benchmarking":
         prediction_optimization_comparison_page()
 
 
@@ -52,21 +52,18 @@ def show_home_page():
     with col1:
         st.title("🌬️ 风速预测与风电场优化系统")
         st.markdown("**智能风能分析与决策平台**")
-    with col2:
-        st.image("https://cdn-icons-png.flaticon.com/512/3050/3050159.png", width=100)
 
     st.markdown("---")
 
-    # 系统简介
-    st.subheader("📖 平台简介")
+    # 系统介绍
+    st.subheader("📖 平台介绍")
     st.markdown("""
     集成**气象数据分析**、**AI风速预测**和**空间优化算法**，
-    为风电场规划提供完整的智能决策支持。
+    为风电场规划提供全面的智能决策支持。
     """)
 
     # 功能模块卡片
     st.subheader("🔧 核心功能")
-
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -75,7 +72,7 @@ def show_home_page():
             st.markdown("### 📊 数据导入")
             st.markdown("""
             - 数据上传验证
-            - 格式自动识别
+            - 自动格式识别
             - 质量评估报告
             """)
 
@@ -99,7 +96,7 @@ def show_home_page():
 
     with col4:
         with st.container(border=True):
-            st.markdown("### ⚡ 布局优化")
+            st.markdown("### ⚡ 智能布局优化")
             st.markdown("""
             - 智能排布
             - 多目标优化
@@ -108,22 +105,22 @@ def show_home_page():
 
     st.markdown("---")
 
-    # 数据概览
+    # 系统概览
     st.subheader("📈 系统概览")
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.metric("数据处理", "52K+ 记录", "支持大规模数据")
+        st.metric("数据处理", "14K+ 记录", "支持大规模数据")
     with col2:
-        st.metric("预测算法", "5+ 模型", "AI精准预测")
+        st.metric("预测算法", "4+ 模型", "AI精准预测")
     with col3:
         st.metric("优化方案", "3+ 算法", "智能布局")
 
-    # 快速开始指引
+    # 快速开始指南
     st.markdown("---")
     st.subheader("🚀 快速开始")
 
-    steps = st.columns(4)
+    steps = st.columns(5)
     with steps[0]:
         st.markdown("**1. 数据导入**")
         st.markdown("上传气象CSV数据")
@@ -134,10 +131,13 @@ def show_home_page():
         st.markdown("**3. 风速预测**")
         st.markdown("训练预测模型")
     with steps[3]:
-        st.markdown("**4. 布局优化**")
+        st.markdown("**4. 智能布局优化**")
         st.markdown("生成最优方案")
+    with steps[3]:
+        st.markdown("**5. 算法组合对比**")
+        st.markdown("对比出最优的算法祝贺")
 
 
-# ========================= 程序入口 =========================
+# ========================= Program Entry =========================
 if __name__ == "__main__":
     main()

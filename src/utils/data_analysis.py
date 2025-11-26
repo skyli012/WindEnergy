@@ -32,7 +32,7 @@ def data_analysis_page():
 
     df = st.session_state['dataset'].copy()
 
-    # 自动识别时间列
+    # 自动检测时间列
     datetime_col = next(
         (col for col in df.columns if 'time' in col.lower() or 'timestamp' in col.lower() or 'date' in col.lower()),
         None)
@@ -46,7 +46,7 @@ def data_analysis_page():
     # 数据概览卡片
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("数据总量", f"{len(df):,} 条")
+        st.metric("总记录数", f"{len(df):,}")
     with col2:
         st.metric("时间跨度", f"{(df[datetime_col].max() - df[datetime_col].min()).days} 天")
     with col3:
@@ -63,7 +63,7 @@ def data_analysis_page():
         "🌪️ 风速分析",
         "🧭 风向分析",
         "🗺️ 空间分析",
-        "🔗 相关性",
+        "🔗 相关性分析",
         "📋 数据概览"
     ])
 
@@ -89,7 +89,7 @@ def temporal_analysis_enhanced(df, datetime_col):
         st.error("未找到风速数据")
         return
 
-    # 只使用小时粒度
+    # 仅使用小时粒度
     df['time_period'] = df[datetime_col].dt.floor('H')
     title = "小时平均风速趋势"
 
@@ -130,46 +130,14 @@ def temporal_analysis_enhanced(df, datetime_col):
     fig.add_trace(go.Scatter(x=time_stats['hour'], y=time_stats['mean'],
                              name='平均值', line=dict(color='blue', width=3)))
     fig.add_trace(go.Scatter(x=time_stats['hour'], y=time_stats['mean'] + time_stats['std'],
-                             name='+1标准差', line=dict(color='red', dash='dash')))
+                             name='+1 标准差', line=dict(color='red', dash='dash')))
     fig.add_trace(go.Scatter(x=time_stats['hour'], y=time_stats['mean'] - time_stats['std'],
-                             name='-1标准差', line=dict(color='red', dash='dash'),
+                             name='-1 标准差', line=dict(color='red', dash='dash'),
                              fill='tonexty'))
 
     fig.update_layout(
         title="风速小时变化趋势",
         xaxis_title="小时",
-        yaxis_title="风速 (m/s)"
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # 短期波动分析
-    st.subheader("📈 短期波动分析")
-
-    # 计算滚动平均值
-    df_sorted = df.sort_values(datetime_col)
-    window_sizes = {
-        "1小时": 6,  # 6个10分钟 = 1小时
-        "3小时": 18,  # 18个10分钟 = 3小时
-        "6小时": 36  # 36个10分钟 = 6小时
-    }
-
-    selected_window = st.selectbox("选择滚动窗口:", list(window_sizes.keys()))
-    window_size = window_sizes[selected_window]
-
-    # 计算滚动统计
-    df_sorted['rolling_mean'] = df_sorted['predicted_wind_speed'].rolling(window=window_size, center=True).mean()
-    df_sorted['rolling_std'] = df_sorted['predicted_wind_speed'].rolling(window=window_size, center=True).std()
-
-    # 显示短期趋势
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_sorted[datetime_col], y=df_sorted['predicted_wind_speed'],
-                             name='原始风速', line=dict(color='lightblue', width=1), opacity=0.6))
-    fig.add_trace(go.Scatter(x=df_sorted[datetime_col], y=df_sorted['rolling_mean'],
-                             name=f'{selected_window}滚动平均', line=dict(color='red', width=2)))
-
-    fig.update_layout(
-        title=f"风速短期趋势分析 ({selected_window}滚动平均)",
-        xaxis_title="时间",
         yaxis_title="风速 (m/s)"
     )
     st.plotly_chart(fig, use_container_width=True)
@@ -205,7 +173,7 @@ def windspeed_analysis_enhanced(df):
     # 风速等级分析
     st.subheader("📊 风速等级分布")
     wind_bins = [0, 3, 6, 9, 12, 15, float('inf')]
-    wind_labels = ['微风(0-3)', '轻风(3-6)', '中风(6-9)', '强风(9-12)', '大风(12-15)', '暴风(15+)']
+    wind_labels = ['轻风(0-3)', '微风(3-6)', '和风(6-9)', '强风(9-12)', '大风(12-15)', '暴风(15+)']
 
     df['wind_level'] = pd.cut(df['predicted_wind_speed'], bins=wind_bins, labels=wind_labels)
     wind_level_count = df['wind_level'].value_counts().sort_index()
@@ -218,7 +186,7 @@ def windspeed_analysis_enhanced(df):
 
     with col2:
         fig = px.bar(x=wind_level_count.index, y=wind_level_count.values,
-                     title="风速等级频次分布", labels={'x': '风速等级', 'y': '频次'})
+                     title="风速等级频率分布", labels={'x': '风速等级', 'y': '频率'})
         st.plotly_chart(fig, use_container_width=True)
 
 
@@ -248,7 +216,7 @@ def wind_direction_analysis_enhanced(df):
         direction_count = df['wind_direction_cat'].value_counts()
 
         fig = px.bar(x=direction_count.index, y=direction_count.values,
-                     title="风向频率分布", labels={'x': '风向', 'y': '频次'})
+                     title="风向频率分布", labels={'x': '风向', 'y': '频率'})
         st.plotly_chart(fig, use_container_width=True)
 
     # 风向稳定性分析
@@ -279,13 +247,13 @@ def spatial_analysis_enhanced(df):
 
     color_by = st.selectbox("按颜色显示:", available_color_options)
 
-    # 对大数据集进行采样
+    # 对大数据集进行抽样
     if len(df) > 1000:
         sample_df = df.sample(n=1000, random_state=42)
     else:
         sample_df = df
 
-    # 创建散点图
+    # 创建散点地图
     fig = px.scatter_mapbox(sample_df,
                             lat='lat',
                             lon='lon',
@@ -295,7 +263,7 @@ def spatial_analysis_enhanced(df):
                                 col in df.columns for col in ['elevation', 'slope']) else None,
                             color_continuous_scale='viridis',
                             zoom=10,
-                            title=f"风电场空间分布 - 按{color_by}着色")
+                            title=f"风电场空间分布 - 按 {color_by} 着色")
 
     fig.update_layout(mapbox_style="open-street-map")
     fig.update_layout(margin={"r": 0, "t": 30, "l": 0, "b": 0})
@@ -308,7 +276,7 @@ def spatial_analysis_enhanced(df):
         col1, col2 = st.columns(2)
 
         with col1:
-            # 移除trendline参数，使用普通散点图
+            # 使用常规散点图，不包含趋势线参数
             fig = px.scatter(df, x='elevation', y='predicted_wind_speed',
                              title="海拔与风速关系")
             # 手动添加趋势线（使用numpy计算）
@@ -324,12 +292,12 @@ def spatial_analysis_enhanced(df):
                                          name='趋势线',
                                          line=dict(color='red', dash='dash')))
             except:
-                pass  # 如果计算趋势线失败，继续显示散点图
+                pass  # 如果趋势线计算失败，继续使用散点图
 
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            # 移除trendline参数，使用普通散点图
+            # 使用常规散点图，不包含趋势线参数
             fig = px.scatter(df, x='slope', y='predicted_wind_speed',
                              title="坡度与风速关系")
             # 手动添加趋势线
@@ -367,7 +335,7 @@ def correlation_analysis_enhanced(df):
     # 散点图矩阵
     st.subheader("📈 散点图矩阵")
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    # 优先选择气象相关变量
+    # 优先选择天气相关变量
     priority_cols = ['predicted_wind_speed', 'temperature_c', 'relative_humidity', 'gust_speed', 'elevation']
     default_cols = [col for col in priority_cols if col in numeric_cols][:4]
 
@@ -375,24 +343,24 @@ def correlation_analysis_enhanced(df):
                                    default=default_cols)
 
     if len(selected_cols) >= 2:
-        # 移除trendline参数
+        # 移除趋势线参数
         fig = px.scatter_matrix(df[selected_cols], height=800)
         st.plotly_chart(fig, use_container_width=True)
 
-    # 重点相关性分析
+    # 关键相关性分析
     if 'predicted_wind_speed' in corr.columns:
         st.subheader("🎯 与风速的相关性分析")
 
         wind_corr = corr['predicted_wind_speed'].sort_values(ascending=False)
-        # 排除自身相关性
+        # 排除自相关性
         strong_corr = wind_corr[(abs(wind_corr) > 0.1) & (wind_corr != 1.0)]
 
-        # 使用进度条展示相关性强度
+        # 使用进度条显示相关性强弱
         for var, corr_val in strong_corr.items():
             col1, col2 = st.columns([3, 1])
             with col1:
                 st.write(f"**{var}**")
-                st.progress(abs(corr_val), text=f"相关性强度: {corr_val:.3f}")
+                st.progress(abs(corr_val), text=f"相关强度: {corr_val:.3f}")
             with col2:
                 if corr_val > 0:
                     st.metric("方向", "正相关", delta=f"{corr_val:.3f}")
@@ -406,7 +374,7 @@ def data_overview(df, datetime_col):
     col1, col2 = st.columns(2)
 
     with col1:
-        st.write("**数据基本信息:**")
+        st.write("**基本数据信息:**")
         info_dict = {
             "总记录数": len(df),
             "时间范围": f"{df[datetime_col].min()} 至 {df[datetime_col].max()}",
