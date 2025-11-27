@@ -925,7 +925,7 @@ def calculate_wind_power_time_series(df, selected_data):
 
 def apply_storage_strategy(time_series_data, storage_params):
     """
-    应用储能调度策略（移除了经济调度）
+    应用储能调度策略
     """
     storage_capacity = storage_params.get('storage_capacity', 60000)  # kWh
     max_power = storage_params.get('max_power', 30000)  # kW
