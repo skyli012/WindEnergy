@@ -15,7 +15,7 @@ from src.visualization.storage_schedule_display import display_storage_schedule_
 # ======================================================
 def strategy_optimization_page():
     # 页面标题 - 更紧凑
-    st.markdown("### 🌬️ 风电场选址优化系统")
+    st.markdown("### 🌬️ 风电场选址-储能协同决策")
     st.caption("基于真实优化算法计算 · 山地风电场布局优化")
 
     # 初始化 session state
