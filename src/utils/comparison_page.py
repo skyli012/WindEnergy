@@ -35,6 +35,24 @@ def calculate_storage_utilization_from_optimization_result(power_results):
     """
     基于优化结果计算储能利用率
     """
+    if not power_results:
+        return {
+            'annual_generation_gwh': 0,
+            'total_capacity_mw': 0,
+            'capacity_factor': 0,
+            'utilization_rate': 0,
+            'equivalent_hours': 0,
+            'theoretical_max_generation_gwh': 0,
+            'generation_efficiency': 0,
+            'estimated_storage_requirement_gwh': 0,
+            'storage_contribution_gwh': 0,
+            'equivalent_storage_capacity_gwh': 0,
+            'storage_utilization_by_hours': 0,
+            'comprehensive_storage_utilization': 0,
+            'storage_cycle_times_per_year': 0,
+            'estimated_storage_efficiency': 0.85
+        }
+
     # 从优化结果中提取关键参数
     annual_generation_gwh = power_results.get('total_annual_generation_gwh', 0)
     total_capacity_mw = power_results.get('total_capacity_mw', 0)
@@ -47,12 +65,12 @@ def calculate_storage_utilization_from_optimization_result(power_results):
 
     # 1. 基于容量因子的储能需求分析
     storage_for_smoothing = annual_generation_gwh * (
-                1 - capacity_factor) / capacity_factor if capacity_factor > 0 else 0
+            1 - capacity_factor) / capacity_factor if capacity_factor > 0 else 0
 
     # 2. 基于利用率的储能配置估算
     base_utilization = 0.5  # 假设无储能时的基础利用率
     storage_contribution = annual_generation_gwh * (
-                utilization_rate - base_utilization) if utilization_rate > base_utilization else 0
+            utilization_rate - base_utilization) if utilization_rate > base_utilization else 0
 
     # 3. 等效储能容量估算
     equivalent_storage_capacity_gwh = storage_contribution * 0.3  # 经验系数
@@ -110,6 +128,21 @@ def prediction_optimization_comparison_page():
         st.session_state.selected_optimization_algorithms = ["遗传算法"]
     if 'dataset_split_info' not in st.session_state:
         st.session_state.dataset_split_info = None
+    if 'dataset' not in st.session_state:
+        st.warning("⚠️ 请先加载数据集")
+        return
+
+    # 检查数据集是否包含必要字段
+    required_columns = ['lat', 'lon', 'predicted_wind_speed']
+    df_base = st.session_state['dataset']
+
+    missing_columns = [col for col in required_columns if col not in df_base.columns]
+    if missing_columns:
+        st.error(f"❌ 数据集缺少必要字段: {missing_columns}")
+        st.info("请确保数据集包含以下字段：")
+        for col in required_columns:
+            st.write(f"- {col}")
+        return
 
     # ========== 上半部分：参数调整和算法选择 ==========
     st.markdown("---")
@@ -150,8 +183,8 @@ def prediction_optimization_comparison_page():
 
         st.markdown("---")
 
-        # 第二行：风场配置、权重设置、数据集划分 - 三个等宽列
-        col3, col4, col5 = st.columns(3)
+        # 第二行：风场配置、权重设置、数据集划分、储能配置 - 四个等宽列
+        col3, col4, col5, col6 = st.columns(4)
 
         with col3:
             with st.container():
@@ -165,34 +198,109 @@ def prediction_optimization_comparison_page():
                 st.session_state.n_turbines_per_farm = n_turbines
 
                 total_turbines = n_farms * n_turbines
+                st.metric("总风机数", f"{total_turbines} 台")
 
         with col4:
             with st.container():
                 st.markdown("**🎯 优化目标权重**")
-                # 风速权重 - 上下排列
-                wind_speed_weight = st.slider("风速权重", 0.1, 1.0, 0.6, 0.1)
+                # 使用数字输入框代替滑块，确保权重总和为1
+                col_weight1, col_weight2, col_weight3 = st.columns(3)
 
-                # 利用率权重 - 上下排列
-                utilization_weight = st.slider("利用率权重", 0.1, 1.0, 0.4, 0.1)
+                with col_weight1:
+                    wind_speed_weight = st.number_input(
+                        "风速权重",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=0.5,
+                        step=0.05,
+                        help="风速稳定性的权重"
+                    )
+
+                with col_weight2:
+                    utilization_weight = st.number_input(
+                        "利用率权重",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=0.3,
+                        step=0.05,
+                        help="设备利用率的权重"
+                    )
+
+                with col_weight3:
+                    storage_weight = st.number_input(
+                        "储能权重",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=0.2,
+                        step=0.05,
+                        help="储能优化的权重"
+                    )
+
+                # 计算和显示权重总和
+                total_weight = wind_speed_weight + utilization_weight + storage_weight
+                if abs(total_weight - 1.0) > 0.01:
+                    st.warning(f"权重总和: {total_weight:.2f} (建议调整为1.0)")
+                else:
+                    st.success(f"权重总和: {total_weight:.2f} ✓")
 
         with col5:
             with st.container():
                 st.markdown("**📊 数据集划分配置**")
-                # 上面两个：训练集和验证集比例
-                col6, col7 = st.columns(2)
-                with col6:
-                    train_ratio = st.slider("训练集比例", 0.5, 0.8, 0.6, 0.05,
-                                            help="训练集坐标点比例，用于模型训练")
-                with col7:
-                    val_ratio = st.slider("验证集比例", 0.1, 0.3, 0.2, 0.05,
-                                          help="验证集坐标点比例，用于模型选择和超参数调优")
 
-                # 下面一个：测试集比例
-                test_ratio = st.slider("测试集比例", 0.1, 0.3, 0.2, 0.05,
-                                       help="测试集坐标点比例，用于最终评估和优化")
+                # 使用更清晰的比例设置方式
+                train_ratio = st.slider(
+                    "训练集比例 (%)",
+                    min_value=50,
+                    max_value=80,
+                    value=60,
+                    step=5,
+                    help="训练集占数据总量的比例"
+                )
 
-                # 显示比例总和
-                total_ratio = train_ratio + val_ratio + test_ratio
+                # 自动计算验证集和测试集比例
+                remaining = 100 - train_ratio
+                val_ratio = st.slider(
+                    "验证集比例 (%)",
+                    min_value=10,
+                    max_value=min(30, remaining - 10),
+                    value=20,
+                    step=5,
+                    help="验证集占数据总量的比例"
+                )
+
+                # 测试集比例自动计算
+                test_ratio = 100 - train_ratio - val_ratio
+
+        with col6:
+            with st.container():
+                st.markdown("**🔋 储能系统配置**")
+
+                # 储能策略选择
+                storage_strategy = st.selectbox(
+                    "储能策略",
+                    ["平滑输出", "削峰填谷", "混合模式"],
+                    help="选择储能系统的运行策略"
+                )
+
+                # 储能容量滑块 (MWh)
+                storage_capacity_mwh = st.slider(
+                    "储能容量 (MWh)",
+                    1, 1000, 60,
+                    help="储能系统的总容量 (兆瓦时)"
+                )
+
+                # 储能功率滑块 (MW)
+                storage_power_mw = st.slider(
+                    "储能功率 (MW)",
+                    1, 500, 30,
+                    help="储能系统的最大充放电功率 (兆瓦)"
+                )
+
+                # 计算并显示储能时间
+                if storage_power_mw > 0:
+                    storage_hours = storage_capacity_mwh / storage_power_mw
+                else:
+                    storage_hours = 0
 
         st.markdown("---")
 
@@ -222,6 +330,7 @@ def prediction_optimization_comparison_page():
                 min_downwind_distance = DOWNWIND_DISTANCE_RATIO * TURBINE_DIAMETER  # 米
                 min_crosswind_distance = CROSSWIND_DISTANCE_RATIO * TURBINE_DIAMETER  # 米
 
+                # 添加储能参数到基础参数中
                 base_algorithm_params = {
                     'n_farms': n_farms,
                     'n_turbines_per_farm': n_turbines,
@@ -238,6 +347,17 @@ def prediction_optimization_comparison_page():
                     'turbine_diameter': TURBINE_DIAMETER,  # 风机直径
                     'wind_speed_weight': wind_speed_weight,
                     'utilization_weight': utilization_weight,
+                    'storage_weight': storage_weight,
+                    'storage_strategy': storage_strategy,
+                    'storage_capacity': storage_capacity_mwh * 1000,  # 转换为kWh
+                    'storage_power': storage_power_mw * 1000,  # 转换为kW
+                    'enable_storage_optimization': True if storage_weight > 0 else False,
+
+                    # 储能参数范围（用于优化算法）
+                    'min_storage_capacity': 10000,  # kWh
+                    'max_storage_capacity': 200000,  # kWh
+                    'min_storage_power': 5000,  # kW
+                    'max_storage_power': 100000,  # kW
                 }
 
                 # 为每个算法设置参数
@@ -349,16 +469,28 @@ def prediction_optimization_comparison_page():
             # 显示配置预览
             if selected_pred_models and selected_opt_algorithms:
                 with st.expander("📋 当前配置预览", expanded=True):
-                    preview_col1, preview_col2 = st.columns(2)
+                    preview_col1, preview_col2, preview_col3 = st.columns(3)
                     with preview_col1:
                         st.write("**预测模型:**")
                         for model in selected_pred_models:
                             st.write(f"- {model}")
+                        st.write(f"**风场配置:**")
+                        st.write(f"- {n_farms}个风场 × {n_turbines}台风机")
+                        st.write(f"- 总风机数: {total_turbines}台")
                     with preview_col2:
                         st.write("**优化算法:**")
                         for algo in selected_opt_algorithms:
                             st.write(f"- {algo}")
-                    st.write(f"**风场配置:** {n_farms}个风场 × {n_turbines}台风机 = {total_turbines}台总风机")
+                        st.write("**权重设置:**")
+                        st.write(f"- 风速: {wind_speed_weight}")
+                        st.write(f"- 利用率: {utilization_weight}")
+                        st.write(f"- 储能: {storage_weight}")
+                    with preview_col3:
+                        st.write("**储能配置:**")
+                        st.write(f"- 策略: {storage_strategy}")
+                        st.write(f"- 容量: {storage_capacity_mwh} MWh")
+                        st.write(f"- 功率: {storage_power_mw} MW")
+                        st.write(f"- 充放电时间: {storage_capacity_mwh / storage_power_mw:.1f} h")
 
         elif st.session_state.current_view == "result":
             if "all_experiment_results" not in st.session_state:
@@ -414,19 +546,31 @@ def _display_best_combination_recommendation():
     comparison_data = []
 
     for combo_key, data in successful_results.items():
+        if data['result'] is None:
+            continue
+
         power = data['result'].get('power_results', {})
         result_data = data['result']
 
         # 获取平均风速
         if 'best_positions_data' in result_data:
             selected_df = result_data['best_positions_data']
-            avg_wind_speed = selected_df['predicted_wind_speed'].mean() if not selected_df.empty else 0
+            if isinstance(selected_df,
+                          pd.DataFrame) and not selected_df.empty and 'predicted_wind_speed' in selected_df.columns:
+                avg_wind_speed = selected_df['predicted_wind_speed'].mean()
+            else:
+                avg_wind_speed = 0
         else:
             avg_wind_speed = 0
 
         # 计算储能利用率
         storage_results = calculate_storage_utilization_from_optimization_result(power)
         storage_utilization = storage_results['comprehensive_storage_utilization'] * 100
+
+        # 获取储能经济性分析
+        storage_economic = result_data.get('storage_economic_analysis', {})
+        storage_capacity_kwh = storage_economic.get('storage_capacity_kwh', 0)
+        storage_power_kw = storage_economic.get('storage_power_kw', 0)
 
         comparison_data.append({
             '组合': combo_key,
@@ -437,20 +581,29 @@ def _display_best_combination_recommendation():
             '年发电量(GWh)': power.get('total_annual_generation_gwh', 0),
             '最优适应度': data['fitness'],
             '容量因数(%)': power.get('average_capacity_factor', 0) * 100,
-            '计算时间(秒)': data['computation_time']
+            '计算时间(秒)': data['computation_time'],
+            '储能容量(kWh)': storage_capacity_kwh,
+            '储能功率(kW)': storage_power_kw,
+            '储能容量(MWh)': storage_capacity_kwh / 1000,
+            '储能功率(MW)': storage_power_kw / 1000,
         })
 
     # 创建数据框并计算综合分数进行排序
     df_comp = pd.DataFrame(comparison_data)
 
-    # 计算综合排名分数（与_display_comprehensive_table相同的权重）
+    if df_comp.empty:
+        st.warning("没有成功的数据可用于排序")
+        return
+
+    # 计算综合排名分数
     df_comp['综合分数'] = (
-            df_comp['年发电量(GWh)'] * 0.25 +
+            df_comp['年发电量(GWh)'] * 0.20 +
             df_comp['最优适应度'] * 0.20 +
             df_comp['容量因数(%)'] * 0.15 +
             df_comp['储能利用率(%)'] * 0.15 +
-            (1 / (df_comp['计算时间(秒)'] + 0.001)) * 0.15 +
-            df_comp['平均风速(m/s)'] * 0.10
+            (1 / (df_comp['计算时间(秒)'] + 0.001)) * 0.10 +
+            df_comp['平均风速(m/s)'] * 0.10 +
+            (df_comp['储能利用率(%)'] / 100) * 0.10  # 额外考虑储能利用率
     )
 
     # 按综合分数降序排列
@@ -483,6 +636,30 @@ def _display_best_combination_recommendation():
         st.metric("计算时间", f"{best_row['计算时间(秒)']:.1f}秒")
         st.metric("最优适应度", f"{best_row['最优适应度']:.4f}")
 
+    # 显示储能配置信息
+    st.markdown("#### 🔋 最佳储能配置")
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        storage_economic = best_data['result'].get('storage_economic_analysis', {})
+        storage_capacity = storage_economic.get('storage_capacity_kwh', 0) / 1000  # 转换为MWh
+        st.metric("储能容量", f"{storage_capacity:.1f} MWh")
+
+    with col2:
+        storage_power = storage_economic.get('storage_power_kw', 0) / 1000  # 转换为MW
+        st.metric("储能功率", f"{storage_power:.1f} MW")
+
+    with col3:
+        storage_investment = storage_economic.get('storage_investment', 0)
+        st.metric("储能投资", f"{storage_investment / 1e6:.2f} 百万元")
+
+    with col4:
+        storage_payback = storage_economic.get('storage_payback_years', 0)
+        if storage_payback < float('inf'):
+            st.metric("投资回收期", f"{storage_payback:.1f} 年")
+        else:
+            st.metric("投资回收期", "∞")
+
     # 显示优化算法信息
     st.info(f"**优化算法**: {best_row['优化算法']}")
 
@@ -490,13 +667,14 @@ def _display_best_combination_recommendation():
     with st.expander("📋 评分标准说明"):
         st.markdown("""
         **综合评分权重分配:**
-        - ⚡ 年发电量: 25%
+        - ⚡ 年发电量: 20%
         - 🎯 最优适应度: 20%
         - 📊 容量因数: 15%
-        - 🔋 储能利用率: 15%
-        - ⏱️ 计算效率: 15%
+        - 🔋 储能利用率: 15% + 10% (额外)
+        - ⏱️ 计算效率: 10%
         - 🌬️ 平均风速: 10%
 
+        *储能利用率得到额外权重，反映储能对风电场的优化效果*
         *基于综合性能排序，最佳组合自动排在最上方*
         """)
 
@@ -508,6 +686,7 @@ def _display_best_combination_recommendation():
                 rank_icon = "🏆" if i == 0 else "🥈" if i == 1 else "🥉"
                 st.write(f"{rank_icon} **{row['组合']}** - 综合得分: {row['综合分数']:.3f} "
                          f"(发电量: {row['年发电量(GWh)']:.1f} GWh, "
+                         f"储能利用率: {row['储能利用率(%)']:.1f}%, "
                          f"适应度: {row['最优适应度']:.4f})")
 
 
@@ -520,20 +699,29 @@ def _display_comprehensive_table():
     failed_data = []  # 单独存储失败数据
 
     for combo_key, data in results.items():
-        if data['status'] == 'success' and data['result']:
+        if data['status'] == 'success' and data['result'] is not None:
             power = data['result'].get('power_results', {})
             result_data = data['result']
 
             # 获取平均风速
             if 'best_positions_data' in result_data:
                 selected_df = result_data['best_positions_data']
-                avg_wind_speed = selected_df['predicted_wind_speed'].mean() if not selected_df.empty else 0
+                if isinstance(selected_df,
+                              pd.DataFrame) and not selected_df.empty and 'predicted_wind_speed' in selected_df.columns:
+                    avg_wind_speed = selected_df['predicted_wind_speed'].mean()
+                else:
+                    avg_wind_speed = 0
             else:
                 avg_wind_speed = 0
 
             # 计算储能利用率
             storage_results = calculate_storage_utilization_from_optimization_result(power)
             storage_utilization = storage_results['comprehensive_storage_utilization'] * 100
+
+            # 获取储能经济性分析
+            storage_economic = result_data.get('storage_economic_analysis', {})
+            storage_capacity_kwh = storage_economic.get('storage_capacity_kwh', 0)
+            storage_power_kw = storage_economic.get('storage_power_kw', 0)
 
             comparison_data.append({
                 '组合': combo_key,
@@ -545,6 +733,9 @@ def _display_comprehensive_table():
                 '最优适应度': data['fitness'],
                 '容量因数(%)': power.get('average_capacity_factor', 0) * 100,
                 '计算时间(秒)': data['computation_time'],
+                '储能容量(MWh)': storage_capacity_kwh / 1000,
+                '储能功率(MW)': storage_power_kw / 1000,
+                '储能投资(百万)': storage_economic.get('storage_investment', 0) / 1e6,
                 '状态': '✅ 成功'
             })
         else:
@@ -559,6 +750,9 @@ def _display_comprehensive_table():
                 '最优适应度': 0,
                 '容量因数(%)': 0,
                 '计算时间(秒)': 0,
+                '储能容量(MWh)': 0,
+                '储能功率(MW)': 0,
+                '储能投资(百万)': 0,
                 '状态': f'❌ 失败: {data.get("error", "未知错误")}'
             })
 
@@ -569,12 +763,13 @@ def _display_comprehensive_table():
     if not df_comp.empty:
         # 计算综合排名分数
         df_comp['综合分数'] = (
-                df_comp['年发电量(GWh)'] * 0.25 +
+                df_comp['年发电量(GWh)'] * 0.20 +
                 df_comp['最优适应度'] * 0.20 +
                 df_comp['容量因数(%)'] * 0.15 +
                 df_comp['储能利用率(%)'] * 0.15 +
-                (1 / (df_comp['计算时间(秒)'] + 0.001)) * 0.15 +
-                df_comp['平均风速(m/s)'] * 0.10
+                (1 / (df_comp['计算时间(秒)'] + 0.001)) * 0.10 +
+                df_comp['平均风速(m/s)'] * 0.10 +
+                (df_comp['储能利用率(%)'] / 100) * 0.10
         )
         df_comp = df_comp.sort_values('综合分数', ascending=False)
 
@@ -595,6 +790,9 @@ def _display_comprehensive_table():
                 "最优适应度": st.column_config.NumberColumn(format="%.4f"),
                 "容量因数(%)": st.column_config.NumberColumn(format="%.2f"),
                 "计算时间(秒)": st.column_config.NumberColumn(format="%.2f"),
+                "储能容量(MWh)": st.column_config.NumberColumn(format="%.1f"),
+                "储能功率(MW)": st.column_config.NumberColumn(format="%.1f"),
+                "储能投资(百万)": st.column_config.NumberColumn(format="%.2f"),
             }
         )
 
@@ -638,18 +836,26 @@ def _display_three_bar_charts():
     fitnesses = []
     capacity_factors = []
     storage_utilizations = []
+    storage_capacities = []
     computation_times = []
 
     # 先收集所有数据
     temp_data = []
     for combo_key, data in successful_results.items():
+        if data['result'] is None:
+            continue
+
         power = data['result'].get('power_results', {})
         result_data = data['result']
 
         # 获取平均风速
         if 'best_positions_data' in result_data:
             selected_df = result_data['best_positions_data']
-            avg_wind_speed = selected_df['predicted_wind_speed'].mean() if not selected_df.empty else 0
+            if isinstance(selected_df,
+                          pd.DataFrame) and not selected_df.empty and 'predicted_wind_speed' in selected_df.columns:
+                avg_wind_speed = selected_df['predicted_wind_speed'].mean()
+            else:
+                avg_wind_speed = 0
         else:
             avg_wind_speed = 0
 
@@ -666,17 +872,22 @@ def _display_three_bar_charts():
         storage_results = calculate_storage_utilization_from_optimization_result(power)
         storage_utilization = storage_results['comprehensive_storage_utilization'] * 100
 
+        # 获取储能容量
+        storage_economic = result_data.get('storage_economic_analysis', {})
+        storage_capacity = storage_economic.get('storage_capacity_kwh', 0) / 1000  # 转换为MWh
+
         # 计算时间
         comp_time = data['computation_time']
 
         # 计算综合分数用于排序
         composite_score = (
-                annual_power * 0.25 +
+                annual_power * 0.20 +
                 fitness * 0.20 +
                 capacity_factor * 0.15 +
                 storage_utilization * 0.15 +
-                (1 / (comp_time + 0.001)) * 0.15 +
-                avg_wind_speed * 0.10
+                (1 / (comp_time + 0.001)) * 0.10 +
+                avg_wind_speed * 0.10 +
+                (storage_utilization / 100) * 0.10
         )
 
         temp_data.append({
@@ -686,6 +897,7 @@ def _display_three_bar_charts():
             'fitness': fitness,
             'capacity_factor': capacity_factor,
             'storage_utilization': storage_utilization,
+            'storage_capacity': storage_capacity,
             'computation_time': comp_time,
             'composite_score': composite_score
         })
@@ -701,6 +913,7 @@ def _display_three_bar_charts():
         fitnesses.append(item['fitness'])
         capacity_factors.append(item['capacity_factor'])
         storage_utilizations.append(item['storage_utilization'])
+        storage_capacities.append(item['storage_capacity'])
         computation_times.append(item['computation_time'])
 
     # 创建2x2子图 - 增加间距
@@ -710,7 +923,7 @@ def _display_three_bar_charts():
             '平均风速对比 (m/s)',
             '年发电量对比 (GWh)',
             '最优适应度对比',
-            '储能利用率对比 (%)'  # 修改为储能利用率
+            '储能容量对比 (MWh)'  # 修改为储能容量
         ),
         vertical_spacing=0.25,  # 增加垂直间距
         horizontal_spacing=0.1,  # 增加水平间距
@@ -743,11 +956,11 @@ def _display_three_bar_charts():
         row=2, col=1
     )
 
-    # 储能利用率
+    # 储能容量
     fig.add_trace(
-        go.Bar(x=combinations, y=storage_utilizations, name="储能利用率",
+        go.Bar(x=combinations, y=storage_capacities, name="储能容量",
                marker_color=colors[3], showlegend=False,
-               text=storage_utilizations, texttemplate='%{text:.1f}%', textposition='outside'),
+               text=storage_capacities, texttemplate='%{text:.1f}MWh', textposition='outside'),
         row=2, col=2
     )
 
@@ -765,7 +978,7 @@ def _display_three_bar_charts():
     fig.update_yaxes(title_text="风速 (m/s)", row=1, col=1)
     fig.update_yaxes(title_text="发电量 (GWh)", row=1, col=2)
     fig.update_yaxes(title_text="适应度", row=2, col=1)
-    fig.update_yaxes(title_text="储能利用率 (%)", row=2, col=2)  # 修改为储能利用率
+    fig.update_yaxes(title_text="储能容量 (MWh)", row=2, col=2)
 
     # 调整字体大小和角度
     fig.update_annotations(font_size=12)  # 增加子图标题字体大小
@@ -778,6 +991,45 @@ def _display_three_bar_charts():
     fig.update_yaxes(title_standoff=15)
 
     st.plotly_chart(fig, use_container_width=True)
+
+    # 创建额外的图表显示储能利用率
+    st.markdown("#### 🔋 储能性能指标")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        fig_util = go.Figure()
+        fig_util.add_trace(go.Bar(
+            x=combinations, y=storage_utilizations, name="储能利用率",
+            marker_color='#FFA500',
+            text=storage_utilizations, texttemplate='%{text:.1f}%', textposition='outside'
+        ))
+        fig_util.update_layout(
+            title="储能利用率对比",
+            xaxis_title="组合",
+            yaxis_title="储能利用率 (%)",
+            height=400
+        )
+        st.plotly_chart(fig_util, use_container_width=True)
+
+    with col2:
+        # 储能容量与利用率的散点图
+        fig_scatter = go.Figure()
+        fig_scatter.add_trace(go.Scatter(
+            x=storage_capacities,
+            y=storage_utilizations,
+            mode='markers+text',
+            marker=dict(size=12, color='#2ca02c'),
+            text=combinations,
+            textposition="top center",
+            hovertemplate='<b>%{text}</b><br>储能容量: %{x:.1f} MWh<br>储能利用率: %{y:.1f}%<extra></extra>'
+        ))
+        fig_scatter.update_layout(
+            title="储能容量 vs 利用率",
+            xaxis_title="储能容量 (MWh)",
+            yaxis_title="储能利用率 (%)",
+            height=400
+        )
+        st.plotly_chart(fig_scatter, use_container_width=True)
 
     # 添加排序说明
     if len(combinations) > 0:
@@ -793,8 +1045,8 @@ def _display_radar_chart():
         st.warning("没有成功的实验组合可显示雷达图")
         return
 
-    # 准备雷达图数据
-    categories = ['平均风速', '年发电量', '最优适应度', '计算效率', '容量因数', '储能利用率']  # 修改为储能利用率
+    # 准备雷达图数据 - 添加储能相关指标
+    categories = ['平均风速', '年发电量', '最优适应度', '计算效率', '容量因数', '储能利用率', '储能容量比']
 
     # 归一化数据用于雷达图
     normalized_data = []
@@ -803,13 +1055,20 @@ def _display_radar_chart():
     # 收集原始数据并排序
     temp_data = []
     for combo_key, data in successful_results.items():
+        if data['result'] is None:
+            continue
+
         power = data['result'].get('power_results', {})
         result_data = data['result']
 
         # 获取平均风速
         if 'best_positions_data' in result_data:
             selected_df = result_data['best_positions_data']
-            avg_wind_speed = selected_df['predicted_wind_speed'].mean() if not selected_df.empty else 0
+            if isinstance(selected_df,
+                          pd.DataFrame) and not selected_df.empty and 'predicted_wind_speed' in selected_df.columns:
+                avg_wind_speed = selected_df['predicted_wind_speed'].mean()
+            else:
+                avg_wind_speed = 0
         else:
             avg_wind_speed = 0
 
@@ -823,14 +1082,22 @@ def _display_radar_chart():
         storage_results = calculate_storage_utilization_from_optimization_result(power)
         storage_utilization = storage_results['comprehensive_storage_utilization'] * 100
 
+        # 获取储能容量
+        storage_economic = result_data.get('storage_economic_analysis', {})
+        storage_capacity = storage_economic.get('storage_capacity_kwh', 0) / 1000  # 转换为MWh
+
+        # 计算储能容量比（储能容量/年发电量）
+        storage_capacity_ratio = (storage_capacity / annual_power * 100) if annual_power > 0 else 0
+
         # 计算综合分数用于排序
         composite_score = (
-                annual_power * 0.25 +
+                annual_power * 0.20 +
                 fitness * 0.20 +
                 capacity_factor * 0.15 +
                 storage_utilization * 0.15 +
-                computation_efficiency * 0.15 +
-                avg_wind_speed * 0.10
+                computation_efficiency * 0.10 +
+                avg_wind_speed * 0.10 +
+                (storage_utilization / 100) * 0.10
         )
 
         temp_data.append({
@@ -840,7 +1107,8 @@ def _display_radar_chart():
             'fitness': fitness,
             'computation_efficiency': computation_efficiency,
             'capacity_factor': capacity_factor,
-            'storage_utilization': storage_utilization,  # 修改为储能利用率
+            'storage_utilization': storage_utilization,
+            'storage_capacity_ratio': storage_capacity_ratio,
             'composite_score': composite_score
         })
 
@@ -854,7 +1122,8 @@ def _display_radar_chart():
         'fitness': [],
         'computation_efficiency': [],
         'capacity_factor': [],
-        'storage_utilization': []  # 修改为储能利用率
+        'storage_utilization': [],
+        'storage_capacity_ratio': []
     }
 
     for item in temp_data:
@@ -865,14 +1134,15 @@ def _display_radar_chart():
         raw_data['computation_efficiency'].append(item['computation_efficiency'])
         raw_data['capacity_factor'].append(item['capacity_factor'])
         raw_data['storage_utilization'].append(item['storage_utilization'])
+        raw_data['storage_capacity_ratio'].append(item['storage_capacity_ratio'])
 
     # 归一化数据（0-1范围）
     for i, combo in enumerate(combinations):
         normalized_values = []
         for key in ['wind_speed', 'power', 'fitness', 'computation_efficiency', 'capacity_factor',
-                    'storage_utilization']:  # 修改为储能利用率
+                    'storage_utilization', 'storage_capacity_ratio']:
             values = raw_data[key]
-            if max(values) > min(values):
+            if len(values) > 0 and max(values) > min(values):
                 normalized_val = (values[i] - min(values)) / (max(values) - min(values))
             else:
                 normalized_val = 0.5  # 如果所有值相同，设为中间值
@@ -906,7 +1176,7 @@ def _display_radar_chart():
             )
         ),
         showlegend=True,
-        title="多维度性能雷达图对比",
+        title="多维度性能雷达图对比（包含储能指标）",
         height=500,
         legend=dict(
             orientation="h",
@@ -922,12 +1192,13 @@ def _display_radar_chart():
     # 添加说明
     with st.expander("📋 雷达图说明"):
         st.markdown("""
-        - **雷达图显示了各组合在六个关键维度上的相对性能**
+        - **雷达图显示了各组合在七个关键维度上的相对性能**
         - 所有指标都归一化到0-100%的范围进行比较
         - **面积越大表示综合性能越好**
         - 图例中的组合已按综合性能排序
         - 计算效率基于计算时间的倒数（时间越短效率越高）
         - **储能利用率**反映了储能系统对风电场的优化效果
+        - **储能容量比**表示储能容量与年发电量的比例
         """)
 
 
@@ -940,7 +1211,7 @@ def _display_detailed_analysis_charts():
         return
 
     # 创建详细分析标签页 - 添加第四个标签页显示详细结果
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 算法性能对比", "🔧 预测模型分析", "🎯 优化效果评估", "🔍 详细优化结果"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📈 算法性能对比", "🔧 预测模型分析", "🎯 储能效果评估", "🔍 详细优化结果"])
 
     with tab1:
         _display_algorithm_performance_comparison(successful_results)
@@ -949,10 +1220,133 @@ def _display_detailed_analysis_charts():
         _display_prediction_model_analysis(successful_results)
 
     with tab3:
-        _display_optimization_effect_evaluation(successful_results)
+        _display_storage_effect_evaluation(successful_results)  # 修改为储能效果评估
 
     with tab4:
         _display_detailed_optimization_results(successful_results)
+
+
+def _display_storage_effect_evaluation(successful_results):
+    """显示储能效果评估"""
+    st.markdown("#### 🔋 储能效果综合评估")
+
+    # 准备储能相关数据
+    storage_data = []
+    for combo_key, data in successful_results.items():
+        if data['result'] is None:
+            continue
+
+        result_data = data['result']
+        storage_economic = result_data.get('storage_economic_analysis', {})
+
+        if storage_economic:
+            storage_data.append({
+                '组合': combo_key,
+                '储能容量(MWh)': storage_economic.get('storage_capacity_kwh', 0) / 1000,
+                '储能功率(MW)': storage_economic.get('storage_power_kw', 0) / 1000,
+                '储能投资(百万)': storage_economic.get('storage_investment', 0) / 1e6,
+                '储能年收益(百万)': storage_economic.get('storage_annual_revenue', 0) / 1e6,
+                '储能运维成本(百万)': storage_economic.get('storage_om_cost', 0) / 1e6,
+                '储能净收益(百万)': storage_economic.get('storage_net_benefit', 0) / 1e6,
+                '回收期(年)': storage_economic.get('storage_payback_years', 0),
+                '充放电时间(h)': (storage_economic.get('storage_capacity_kwh', 0) /
+                                  storage_economic.get('storage_power_kw', 1) if storage_economic.get(
+                    'storage_power_kw', 0) > 0 else 0)
+            })
+
+    if storage_data:
+        df_storage = pd.DataFrame(storage_data)
+
+        # 显示储能配置表格
+        st.markdown("##### 📋 储能配置详情")
+        st.dataframe(
+            df_storage,
+            use_container_width=True,
+            column_config={
+                "组合": st.column_config.TextColumn(width="medium"),
+                "储能容量(MWh)": st.column_config.NumberColumn(format="%.1f"),
+                "储能功率(MW)": st.column_config.NumberColumn(format="%.1f"),
+                "储能投资(百万)": st.column_config.NumberColumn(format="%.2f"),
+                "储能年收益(百万)": st.column_config.NumberColumn(format="%.2f"),
+                "储能运维成本(百万)": st.column_config.NumberColumn(format="%.2f"),
+                "储能净收益(百万)": st.column_config.NumberColumn(format="%.2f"),
+                "回收期(年)": st.column_config.NumberColumn(format="%.1f"),
+                "充放电时间(h)": st.column_config.NumberColumn(format="%.1f"),
+            }
+        )
+
+        # 储能经济性分析图表
+        st.markdown("##### 📈 储能经济性分析")
+
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=('储能投资成本', '储能年收益', '投资回收期', '充放电时间'),
+            specs=[[{"type": "bar"}, {"type": "bar"}], [{"type": "bar"}, {"type": "bar"}]]
+        )
+
+        fig.add_trace(
+            go.Bar(x=df_storage['组合'], y=df_storage['储能投资(百万)'],
+                   name='投资成本', marker_color='#d62728'),
+            row=1, col=1
+        )
+
+        fig.add_trace(
+            go.Bar(x=df_storage['组合'], y=df_storage['储能年收益(百万)'],
+                   name='年收益', marker_color='#2ca02c'),
+            row=1, col=2
+        )
+
+        fig.add_trace(
+            go.Bar(x=df_storage['组合'], y=df_storage['回收期(年)'],
+                   name='回收期', marker_color='#ff7f0e'),
+            row=2, col=1
+        )
+
+        fig.add_trace(
+            go.Bar(x=df_storage['组合'], y=df_storage['充放电时间(h)'],
+                   name='充放电时间', marker_color='#9467bd'),
+            row=2, col=2
+        )
+
+        fig.update_layout(
+            height=600,
+            showlegend=False,
+            title_text="储能经济性指标对比"
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # 储能效率分析
+        st.markdown("##### ⚡ 储能系统效率分析")
+
+        # 计算储能效率指标
+        efficiency_data = []
+        for i, row in df_storage.iterrows():
+            efficiency = (row['储能年收益(百万)'] / row['储能投资(百万)']) * 100 if row['储能投资(百万)'] > 0 else 0
+            efficiency_data.append({
+                '组合': row['组合'],
+                '投资收益率(%)': efficiency,
+                '单位容量投资(万元/MWh)': (row['储能投资(百万)'] * 100) / row['储能容量(MWh)'] if row[
+                                                                                                      '储能容量(MWh)'] > 0 else 0,
+                '单位功率投资(万元/MW)': (row['储能投资(百万)'] * 100) / row['储能功率(MW)'] if row[
+                                                                                                    '储能功率(MW)'] > 0 else 0,
+            })
+
+        df_efficiency = pd.DataFrame(efficiency_data)
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            avg_return = df_efficiency['投资收益率(%)'].mean()
+            st.metric("平均投资收益率", f"{avg_return:.1f}%")
+        with col2:
+            avg_cap_cost = df_efficiency['单位容量投资(万元/MWh)'].mean()
+            st.metric("平均单位容量投资", f"{avg_cap_cost:.0f} 万元/MWh")
+        with col3:
+            avg_power_cost = df_efficiency['单位功率投资(万元/MW)'].mean()
+            st.metric("平均单位功率投资", f"{avg_power_cost:.0f} 万元/MW")
+
+    else:
+        st.info("无储能经济性分析数据")
 
 
 def _display_detailed_optimization_results(successful_results):
@@ -1182,6 +1576,41 @@ def _display_storage_utilization_analysis(result):
             st.metric("小时数利用率", f"{storage_results['storage_utilization_by_hours']:.2%}")
             st.metric("年循环次数", f"{storage_results['storage_cycle_times_per_year']:.0f}")
 
+        # 显示储能经济性分析
+        storage_economic = result.get('storage_economic_analysis', {})
+        if storage_economic:
+            st.markdown("##### 💰 储能经济性分析")
+
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                storage_capacity = storage_economic.get('storage_capacity_kwh', 0) / 1000  # MWh
+                st.metric("储能容量", f"{storage_capacity:.1f} MWh")
+
+            with col2:
+                storage_power = storage_economic.get('storage_power_kw', 0) / 1000  # MW
+                st.metric("储能功率", f"{storage_power:.1f} MW")
+
+            with col3:
+                storage_investment = storage_economic.get('storage_investment', 0)
+                st.metric("总投资", f"{storage_investment / 1e6:.2f} 百万")
+
+            with col4:
+                storage_payback = storage_economic.get('storage_payback_years', 0)
+                if storage_payback < float('inf'):
+                    st.metric("回收期", f"{storage_payback:.1f} 年")
+                else:
+                    st.metric("回收期", "∞")
+
+            # 计算单位投资
+            unit_capacity_cost = storage_investment / (storage_capacity * 1000) if storage_capacity > 0 else 0
+            unit_power_cost = storage_investment / (storage_power * 1000) if storage_power > 0 else 0
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("单位容量成本", f"{unit_capacity_cost:.0f} 元/kWh")
+            with col2:
+                st.metric("单位功率成本", f"{unit_power_cost:.0f} 元/kW")
+
         # 储能利用率详细分析
         st.markdown("##### 📊 储能利用率构成")
 
@@ -1242,6 +1671,9 @@ def _display_algorithm_performance_comparison(successful_results):
     # 按算法分组数据
     algorithm_data = {}
     for combo_key, data in successful_results.items():
+        if data['result'] is None:
+            continue
+
         algo = data['optimization_algorithm']
         if algo not in algorithm_data:
             algorithm_data[algo] = []
@@ -1256,19 +1688,29 @@ def _display_algorithm_performance_comparison(successful_results):
 
         # 计算平均储能利用率
         storage_utilizations = []
+        # 获取储能容量
+        storage_capacities = []
         for d in data_list:
-            storage_results = calculate_storage_utilization_from_optimization_result(
-                d['result'].get('power_results', {})
-            )
-            storage_utilizations.append(storage_results['comprehensive_storage_utilization'] * 100)
+            if d['result']:
+                storage_results = calculate_storage_utilization_from_optimization_result(
+                    d['result'].get('power_results', {})
+                )
+                storage_utilizations.append(storage_results['comprehensive_storage_utilization'] * 100)
 
-        algo_stats[algo] = {
-            'avg_fitness': np.mean(fitnesses),
-            'avg_computation_time': np.mean(computation_times),
-            'avg_power': np.mean(powers),
-            'avg_storage_utilization': np.mean(storage_utilizations) if storage_utilizations else 0,
-            'count': len(data_list)
-        }
+                # 获取储能容量
+                storage_economic = d['result'].get('storage_economic_analysis', {})
+                storage_capacity = storage_economic.get('storage_capacity_kwh', 0) / 1000  # MWh
+                storage_capacities.append(storage_capacity)
+
+        if fitnesses:  # 确保有数据
+            algo_stats[algo] = {
+                'avg_fitness': np.mean(fitnesses),
+                'avg_computation_time': np.mean(computation_times),
+                'avg_power': np.mean(powers),
+                'avg_storage_utilization': np.mean(storage_utilizations) if storage_utilizations else 0,
+                'avg_storage_capacity': np.mean(storage_capacities) if storage_capacities else 0,
+                'count': len(data_list)
+            }
 
     # 创建算法对比图表
     if algo_stats:
@@ -1277,10 +1719,11 @@ def _display_algorithm_performance_comparison(successful_results):
         avg_times = [algo_stats[algo]['avg_computation_time'] for algo in algorithms]
         avg_powers = [algo_stats[algo]['avg_power'] for algo in algorithms]
         avg_storage_utilizations = [algo_stats[algo]['avg_storage_utilization'] for algo in algorithms]
+        avg_storage_capacities = [algo_stats[algo]['avg_storage_capacity'] for algo in algorithms]
 
         fig = make_subplots(
             rows=2, cols=2,
-            subplot_titles=('平均适应度', '平均计算时间(秒)', '平均年发电量(GWh)', '平均储能利用率(%)'),
+            subplot_titles=('平均适应度', '平均计算时间(秒)', '平均年发电量(GWh)', '平均储能容量(MWh)'),
             specs=[[{"type": "bar"}, {"type": "bar"}], [{"type": "bar"}, {"type": "bar"}]]
         )
 
@@ -1308,10 +1751,10 @@ def _display_algorithm_performance_comparison(successful_results):
             row=2, col=1
         )
 
-        # 储能利用率
+        # 储能容量
         fig.add_trace(
-            go.Bar(name='储能利用率', x=algorithms, y=avg_storage_utilizations,
-                   marker_color='#FFA500', text=[f'{util:.1f}%' for util in avg_storage_utilizations],
+            go.Bar(name='储能容量', x=algorithms, y=avg_storage_capacities,
+                   marker_color='#FFA500', text=[f'{cap:.1f}' for cap in avg_storage_capacities],
                    textposition='auto'),
             row=2, col=2
         )
@@ -1323,6 +1766,24 @@ def _display_algorithm_performance_comparison(successful_results):
         )
 
         st.plotly_chart(fig, use_container_width=True)
+
+        # 额外显示储能利用率图表
+        st.markdown("##### 🔋 储能性能对比")
+
+        fig_util = go.Figure()
+        fig_util.add_trace(go.Bar(
+            x=algorithms, y=avg_storage_utilizations,
+            marker_color=['#1f77b4', '#ff7f0e', '#2ca02c'],
+            text=[f'{util:.1f}%' for util in avg_storage_utilizations],
+            textposition='auto'
+        ))
+        fig_util.update_layout(
+            title="平均储能利用率对比",
+            xaxis_title="算法",
+            yaxis_title="储能利用率 (%)",
+            height=400
+        )
+        st.plotly_chart(fig_util, use_container_width=True)
 
         # 算法推荐
         best_fitness_algo = max(zip(avg_fitness, algorithms))[1]
@@ -1348,6 +1809,9 @@ def _display_prediction_model_analysis(successful_results):
     # 按预测模型分组数据
     model_data = {}
     for combo_key, data in successful_results.items():
+        if data['result'] is None:
+            continue
+
         model = data['prediction_model']
         if model not in model_data:
             model_data[model] = []
@@ -1361,28 +1825,41 @@ def _display_prediction_model_analysis(successful_results):
 
         # 计算平均储能利用率
         storage_utilizations = []
+        # 获取储能容量
+        storage_capacities = []
         for d in data_list:
-            storage_results = calculate_storage_utilization_from_optimization_result(
-                d['result'].get('power_results', {})
-            )
-            storage_utilizations.append(storage_results['comprehensive_storage_utilization'] * 100)
+            if d['result']:
+                storage_results = calculate_storage_utilization_from_optimization_result(
+                    d['result'].get('power_results', {})
+                )
+                storage_utilizations.append(storage_results['comprehensive_storage_utilization'] * 100)
+
+                # 获取储能容量
+                storage_economic = d['result'].get('storage_economic_analysis', {})
+                storage_capacity = storage_economic.get('storage_capacity_kwh', 0) / 1000  # MWh
+                storage_capacities.append(storage_capacity)
 
         # 获取平均风速数据
         wind_speeds = []
         for d in data_list:
-            result_data = d['result']
-            if 'best_positions_data' in result_data:
-                selected_df = result_data['best_positions_data']
-                wind_speed = selected_df['predicted_wind_speed'].mean() if not selected_df.empty else 0
-                wind_speeds.append(wind_speed)
+            if d['result']:
+                result_data = d['result']
+                if 'best_positions_data' in result_data:
+                    selected_df = result_data['best_positions_data']
+                    if isinstance(selected_df,
+                                  pd.DataFrame) and not selected_df.empty and 'predicted_wind_speed' in selected_df.columns:
+                        wind_speed = selected_df['predicted_wind_speed'].mean()
+                        wind_speeds.append(wind_speed)
 
-        model_stats[model] = {
-            'avg_fitness': np.mean(fitnesses),
-            'avg_power': np.mean(powers),
-            'avg_storage_utilization': np.mean(storage_utilizations) if storage_utilizations else 0,
-            'avg_wind_speed': np.mean(wind_speeds) if wind_speeds else 0,
-            'count': len(data_list)
-        }
+        if fitnesses:  # 确保有数据
+            model_stats[model] = {
+                'avg_fitness': np.mean(fitnesses),
+                'avg_power': np.mean(powers),
+                'avg_storage_utilization': np.mean(storage_utilizations) if storage_utilizations else 0,
+                'avg_storage_capacity': np.mean(storage_capacities) if storage_capacities else 0,
+                'avg_wind_speed': np.mean(wind_speeds) if wind_speeds else 0,
+                'count': len(data_list)
+            }
 
     # 创建模型对比图表
     if model_stats:
@@ -1390,6 +1867,7 @@ def _display_prediction_model_analysis(successful_results):
         avg_fitness = [model_stats[model]['avg_fitness'] for model in models]
         avg_powers = [model_stats[model]['avg_power'] for model in models]
         avg_storage_utilizations = [model_stats[model]['avg_storage_utilization'] for model in models]
+        avg_storage_capacities = [model_stats[model]['avg_storage_capacity'] for model in models]
         avg_wind_speeds = [model_stats[model]['avg_wind_speed'] for model in models]
 
         fig = go.Figure()
@@ -1438,6 +1916,24 @@ def _display_prediction_model_analysis(successful_results):
 
         st.plotly_chart(fig, use_container_width=True)
 
+        # 储能容量对比
+        fig_capacity = go.Figure()
+        fig_capacity.add_trace(go.Bar(
+            name='平均储能容量(MWh)',
+            x=models,
+            y=avg_storage_capacities,
+            marker_color='#9467bd',
+            text=[f'{c:.1f}' for c in avg_storage_capacities],
+            textposition='auto'
+        ))
+        fig_capacity.update_layout(
+            title="预测模型的平均储能容量对比",
+            xaxis_title="预测模型",
+            yaxis_title="储能容量 (MWh)",
+            height=400
+        )
+        st.plotly_chart(fig_capacity, use_container_width=True)
+
         # 模型推荐
         best_fitness_model = max(zip(avg_fitness, models))[1]
         best_power_model = max(zip(avg_powers, models))[1]
@@ -1468,11 +1964,18 @@ def _display_optimization_effect_evaluation(successful_results):
 
     # 计算储能利用率
     storage_utilizations = []
+    storage_capacities = []
     for data in successful_results.values():
-        storage_results = calculate_storage_utilization_from_optimization_result(
-            data['result'].get('power_results', {})
-        )
-        storage_utilizations.append(storage_results['comprehensive_storage_utilization'] * 100)
+        if data['result']:
+            storage_results = calculate_storage_utilization_from_optimization_result(
+                data['result'].get('power_results', {})
+            )
+            storage_utilizations.append(storage_results['comprehensive_storage_utilization'] * 100)
+
+            # 获取储能容量
+            storage_economic = data['result'].get('storage_economic_analysis', {})
+            storage_capacity = storage_economic.get('storage_capacity_kwh', 0) / 1000  # MWh
+            storage_capacities.append(storage_capacity)
 
     # 显示整体统计
     col1, col2, col3, col4 = st.columns(4)
@@ -1495,7 +1998,7 @@ def _display_optimization_effect_evaluation(successful_results):
     # 创建性能分布图
     fig = make_subplots(
         rows=2, cols=2,
-        subplot_titles=('适应度分布', '计算时间分布', '年发电量分布', '储能利用率分布'),
+        subplot_titles=('适应度分布', '计算时间分布', '年发电量分布', '储能容量分布'),
         specs=[[{"type": "histogram"}, {"type": "histogram"}], [{"type": "histogram"}, {"type": "histogram"}]]
     )
 
@@ -1517,9 +2020,9 @@ def _display_optimization_effect_evaluation(successful_results):
         row=2, col=1
     )
 
-    # 储能利用率分布
+    # 储能容量分布
     fig.add_trace(
-        go.Histogram(x=storage_utilizations, name='储能利用率分布', marker_color='#FFA500'),
+        go.Histogram(x=storage_capacities, name='储能容量分布', marker_color='#FFA500'),
         row=2, col=2
     )
 
@@ -1532,7 +2035,7 @@ def _display_optimization_effect_evaluation(successful_results):
     fig.update_xaxes(title_text="适应度", row=1, col=1)
     fig.update_xaxes(title_text="计算时间(秒)", row=1, col=2)
     fig.update_xaxes(title_text="年发电量(GWh)", row=2, col=1)
-    fig.update_xaxes(title_text="储能利用率(%)", row=2, col=2)
+    fig.update_xaxes(title_text="储能容量(MWh)", row=2, col=2)
     fig.update_yaxes(title_text="频次", row=1, col=1)
     fig.update_yaxes(title_text="频次", row=1, col=2)
     fig.update_yaxes(title_text="频次", row=2, col=1)
@@ -1577,14 +2080,32 @@ def _display_optimization_effect_evaluation(successful_results):
 def _split_dataset_by_coordinates(df, train_ratio, val_ratio, test_ratio):
     """按照坐标点划分数据集，保持每个坐标的时间连续性"""
 
-    # 获取所有唯一的坐标点 - 修复字段名
+    # 确保输入的ratio是小数形式
+    train_ratio = train_ratio / 100.0
+    val_ratio = val_ratio / 100.0
+    test_ratio = test_ratio / 100.0
+
+    # 获取所有唯一的坐标点
     coordinates = df[['lat', 'lon']].drop_duplicates()
     n_coordinates = len(coordinates)
 
+    # 确保有足够的坐标点
+    if n_coordinates < 3:
+        raise ValueError(f"坐标点数量太少 ({n_coordinates})，需要至少3个坐标点进行划分")
+
     # 计算每个集合的坐标数量
-    n_train = int(n_coordinates * train_ratio)
-    n_val = int(n_coordinates * val_ratio)
-    n_test = n_coordinates - n_train - n_val
+    n_train = max(1, int(n_coordinates * train_ratio))
+    n_val = max(1, int(n_coordinates * val_ratio))
+    n_test = max(1, n_coordinates - n_train - n_val)
+
+    # 调整确保总和为总坐标数
+    while n_train + n_val + n_test > n_coordinates:
+        if n_test > 1:
+            n_test -= 1
+        elif n_val > 1:
+            n_val -= 1
+        elif n_train > 1:
+            n_train -= 1
 
     # 随机打乱坐标点
     shuffled_coords = coordinates.sample(frac=1, random_state=42)
@@ -1592,9 +2113,9 @@ def _split_dataset_by_coordinates(df, train_ratio, val_ratio, test_ratio):
     # 划分坐标点
     train_coords = shuffled_coords.iloc[:n_train]
     val_coords = shuffled_coords.iloc[n_train:n_train + n_val]
-    test_coords = shuffled_coords.iloc[n_train + n_val:]
+    test_coords = shuffled_coords.iloc[n_train + n_val:n_train + n_val + n_test]
 
-    # 根据坐标点划分数据 - 修复字段名
+    # 根据坐标点划分数据
     train_data = df.merge(train_coords, on=['lat', 'lon'])
     val_data = df.merge(val_coords, on=['lat', 'lon'])
     test_data = df.merge(test_coords, on=['lat', 'lon'])
@@ -1616,7 +2137,6 @@ def _split_dataset_by_coordinates(df, train_ratio, val_ratio, test_ratio):
 
 def _prepare_features(df):
     """准备特征数据"""
-    # 这里根据您的实际数据特征进行调整
     feature_columns = []
 
     # 基本地理特征
@@ -1639,7 +2159,7 @@ def _prepare_features(df):
     if 'month' in df.columns:
         feature_columns.append('month')
 
-    # 如果特征太少，使用经纬度 - 修复字段名
+    # 如果特征太少，使用经纬度
     if len(feature_columns) < 3:
         feature_columns.extend(['lat', 'lon'])
 
@@ -1649,9 +2169,9 @@ def _prepare_features(df):
 def _train_random_forest(train_data, val_data, feature_columns):
     """训练随机森林模型"""
     X_train = train_data[feature_columns]
-    y_train = train_data['predicted_wind_speed']  # ⬅️ 修复为实际的字段名
+    y_train = train_data['predicted_wind_speed']
     X_val = val_data[feature_columns]
-    y_val = val_data['predicted_wind_speed']  # ⬅️ 修复为实际的字段名
+    y_val = val_data['predicted_wind_speed']
 
     model = RandomForestRegressor(n_estimators=100, random_state=42)
     model.fit(X_train, y_train)
@@ -1782,18 +2302,11 @@ def _generate_wind_prediction(df: pd.DataFrame, model_name: str, split_info: dic
         # 首先获取测试集坐标的数据
         test_coords_data = df.merge(split_info['test_coords'], on=['lat', 'lon'])
 
-        # 显示测试集数据的前后对比
-        original_test_wind_speed = split_info['test_data']['predicted_wind_speed'].mean()
-        predicted_test_wind_speed = test_coords_data['predicted_wind_speed'].mean()
-
-
     except Exception as e:
         st.error(f"模型 {model_name} 训练失败: {str(e)}")
         # 如果模型训练失败，使用平均风速作为预测值
-        mean_wind_speed = split_info['train_data']['predicted_wind_speed'].mean()  # ⬅️ 修复为实际的字段名
+        mean_wind_speed = split_info['train_data']['predicted_wind_speed'].mean()
         df["predicted_wind_speed"] = mean_wind_speed
-
-    # ==================== 关键修改：使用与第二个代码相同的风能利用率计算 ====================
 
     # 计算风功率密度
     df["wind_power_density"] = 0.5 * 1.225 * (df["predicted_wind_speed"] ** 3)
@@ -1807,8 +2320,8 @@ def _generate_wind_prediction(df: pd.DataFrame, model_name: str, split_info: dic
     df["normalized_wind_speed"] = df["predicted_wind_speed"] / (max_ws if max_ws > 0 else 1)
     df["normalized_utilization"] = df["wind_utilization_rate"] / (max_ut if max_ut > 0 else 1)
     df["composite_score"] = (
-            df["normalized_wind_speed"] * df.get('wind_speed_weight', 0.6) +
-            df["normalized_utilization"] * df.get('utilization_weight', 0.4)
+            df["normalized_wind_speed"] * 0.6 +  # 使用固定权重
+            df["normalized_utilization"] * 0.4
     )
 
     # 设置有效点位 - 与第二个代码保持一致
@@ -1830,7 +2343,6 @@ def _run_all_combinations_experiment(pred_models, opt_algorithms, base_params, a
     # 进度显示 - 修复：只有一个进度条和状态文本
     progress_bar = st.progress(0)
     status_text = st.empty()
-    results_container = st.empty()
 
     total_combinations = len(pred_models) * len(opt_algorithms)
     completed = 0
@@ -1862,6 +2374,10 @@ def _run_all_combinations_experiment(pred_models, opt_algorithms, base_params, a
 
             # Step 3: 执行优化（使用测试集坐标的数据进行优化）- 关键修改：这里使用的已经是预测后的数据
             test_coords_data = df_processed.merge(split_info['test_coords'], on=['lat', 'lon'])
+
+            # 检查测试集数据是否为空
+            if test_coords_data.empty:
+                raise ValueError("测试集数据为空，无法进行优化")
 
             # 关键修改：使用与第二个代码相同的优化函数调用方式
             result = call_optimize_function_with_all_strategies(test_coords_data, opt_algo, algorithm_params)

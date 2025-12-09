@@ -30,6 +30,12 @@ def strategy_optimization_page():
     if 'n_turbines_per_farm' not in st.session_state:
         st.session_state.n_turbines_per_farm = 4
 
+    # 🔥 新增：初始化储能决策变量
+    if 'storage_capacity_mwh' not in st.session_state:
+        st.session_state.storage_capacity_mwh = 60  # 默认60 MWh
+    if 'storage_power_mw' not in st.session_state:
+        st.session_state.storage_power_mw = 30  # 默认30 MW
+
     # ========== 地图在左边，控制面板在右边 ==========
     map_col, control_col = st.columns([2, 1])
 
@@ -88,6 +94,27 @@ def strategy_optimization_page():
         # 计算总风机数量
         total_turbines = n_farms * n_turbines
 
+        # 🔥 新增：储能决策变量设置
+        st.markdown("**🔋 储能系统配置**")
+        col_storage1, col_storage2 = st.columns(2)
+        with col_storage1:
+            # 储能容量选择 (MWh)
+            storage_capacity_mwh = st.slider(
+                "储能容量 (MWh)",
+                10, 200, st.session_state.storage_capacity_mwh, 10,
+                help="储能系统总能量容量，影响存储时间和削峰填谷能力"
+            )
+            st.session_state.storage_capacity_mwh = storage_capacity_mwh
+
+        with col_storage2:
+            # 储能功率选择 (MW)
+            storage_power_mw = st.slider(
+                "储能功率 (MW)",
+                5, 100, st.session_state.storage_power_mw, 5,
+                help="储能系统最大充放电功率，影响调节速度和能力"
+            )
+            st.session_state.storage_power_mw = storage_power_mw
+
         # 根据风场数量设置合理的固定间距
         if n_farms == 1:
             min_farm_distance = 0  # 单个风场不需要间距约束
@@ -138,6 +165,11 @@ def strategy_optimization_page():
             'turbine_diameter': TURBINE_DIAMETER,  # 风机直径
             'wind_speed_weight': wind_speed_weight,
             'utilization_weight': utilization_weight,
+            # 🔥 新增：储能决策变量（传递给优化算法）
+            'storage_capacity': storage_capacity_mwh * 1000,  # 转换为kWh
+            'storage_power': storage_power_mw * 1000,  # 转换为kW
+            'storage_capacity_mwh': storage_capacity_mwh,
+            'storage_power_mw': storage_power_mw,
         }
 
         # 算法选择单独一行
@@ -219,11 +251,18 @@ def strategy_optimization_page():
                 st.rerun()
 
         elif "windfarm_data" in st.session_state:
-            st.success("✅ 数据已就绪")
+            # st.success("✅ 数据已就绪")
             df = st.session_state["windfarm_data"]
 
             # 显示数据基本信息
             valid_count = df['valid'].sum() if 'valid' in df.columns else 0
+
+            # 🔥 新增：显示风电和储能配置信息
+            total_capacity_mw = total_turbines * 2.5  # 2.5MW每台风机
+            storage_ratio = storage_power_mw / total_capacity_mw if total_capacity_mw > 0 else 0
+            st.info(
+                f"📊 配置信息: {total_turbines}台风机 ({total_capacity_mw:.1f} MW) + {storage_capacity_mwh} MWh储能 ({storage_power_mw} MW)")
+
         else:
             st.info("📁 请在数据导入页面先上传数据文件")
 
@@ -241,7 +280,7 @@ def strategy_optimization_page():
                                              help="同时运行遗传算法、模拟退火、粒子群优化进行对比分析（不包含PuLP求解器）")
 
             if st.button("🚀 开始优化计算", use_container_width=True, type="primary"):
-                with st.spinner(f"正在计算{n_farms}个风电场的最优布局..."):
+                with st.spinner(f"正在计算{n_farms}个风电场 + {storage_capacity_mwh}MWh储能的最优布局..."):
                     try:
                         if compare_algorithms:
                             # 运行多算法对比（不包含PuLP）
@@ -250,7 +289,7 @@ def strategy_optimization_page():
                             # 单个算法优化
                             result = call_optimize_function_with_all_strategies(df, algo, algorithm_params)
                             st.session_state["optimization_result"] = result
-                            st.success(f"🎯 {n_farms}个风电场优化完成")
+                            st.success(f"🎯 {n_farms}个风电场 + {storage_capacity_mwh}MWh储能优化完成")
                             st.session_state.current_page = "result"
                             st.rerun()
                     except Exception as e:
@@ -273,9 +312,35 @@ def strategy_optimization_page():
         # 显示风能利用率分析
         display_wind_utilization_analysis(result, df)
 
+        # 🔥 新增：显示储能配置结果
+        display_storage_configuration(result)
+
         # 显示算法对比结果（如果有）
         if st.session_state.algorithm_comparison_results:
             display_algorithm_comparison()
+
+
+def display_storage_configuration(result):
+    """显示储能配置结果"""
+    if 'storage_params' in result:
+        storage_params = result['storage_params']
+        st.markdown("---")
+        st.markdown("#### 🔋 储能配置详情")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            capacity_mwh = storage_params.get('storage_capacity_mwh',
+                                              storage_params.get('storage_capacity', 60000) / 1000)
+            st.metric("储能容量", f"{capacity_mwh:.1f} MWh")
+        with col2:
+            power_mw = storage_params.get('storage_power_mw',
+                                          storage_params.get('storage_power', 30000) / 1000)
+            st.metric("储能功率", f"{power_mw:.1f} MW")
+
+        # 计算储能时长
+        if power_mw > 0:
+            storage_hours = capacity_mwh / power_mw
+            st.info(f"🔋 储能时长: {storage_hours:.1f} 小时")
 
 
 def run_algorithm_comparison(df, algorithm_params, n_farms):
