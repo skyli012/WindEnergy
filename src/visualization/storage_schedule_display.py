@@ -30,43 +30,57 @@ def display_storage_schedule_analysis(result, df):
 
 def display_single_farm_storage_analysis(result, df):
     """
-    显示单风场储能调度分析
+    显示单风场储能调度分析 - 改为垂直布局
     """
     storage_results = result['storage_results']
     best_strategy = result.get('best_strategy', '未知')
 
     st.markdown("### ⚡ 储能调度详细分析")
 
-    # 创建标签页显示不同的分析视图
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 功率平衡分析",
-        "🔋 储能状态分析",
-        "📈 策略效果对比",
-        "🎯 调度性能指标"
-    ])
+    # 不再使用标签页，改为垂直顺序排列
+    # 1. 功率平衡分析
+    st.markdown("#### 📊 功率平衡分析")
+    display_power_balance_analysis(storage_results, best_strategy, farm_name="主风场")
 
-    with tab1:
-        display_power_balance_analysis(storage_results, best_strategy, farm_name="主风场")
+    st.markdown("---")  # 添加分割线
 
-    with tab2:
-        display_storage_state_analysis(storage_results, best_strategy, farm_name="主风场")
+    # 2. 储能状态分析
+    st.markdown("#### 🔋 储能状态分析")
+    display_storage_state_analysis(storage_results, best_strategy, farm_name="主风场")
 
-    with tab3:
+    st.markdown("---")  # 添加分割线
+
+    # 3. 详细充放电状态数据
+    st.markdown("#### 📈 详细充放电状态")
+    display_detailed_storage_status(storage_results, best_strategy, farm_name="主风场")
+
+    st.markdown("---")  # 添加分割线
+
+    # 4. 调度性能指标
+    st.markdown("#### 🎯 调度性能指标")
+    display_scheduling_performance_metrics(storage_results, best_strategy, farm_name="主风场")
+
+    st.markdown("---")  # 添加分割线
+
+    # 5. 策略效果对比（如果有多个策略）
+    if 'strategy_comparison' in result:
+        st.markdown("#### 🔄 策略效果对比")
         display_strategy_effect_comparison(result)
-
-    with tab4:
-        display_scheduling_performance_metrics(storage_results, best_strategy, farm_name="主风场")
 
 
 def display_multi_farm_storage_analysis(result, df):
     """
-    显示多风场储能调度分析
+    显示多风场储能调度分析 - 改为标签页切换
     """
-
     # 获取风场信息
     n_farms = result.get('n_farms', 1)
     storage_results_list = result['storage_results']
     best_strategy = result.get('best_strategy', '未知')
+
+    st.markdown(f"### ⚡ 多风场储能调度分析 ({best_strategy}策略)")
+
+    # 显示风场数量统计
+    st.info(f"🏭 共优化了 {n_farms} 个风场，选择标签页查看各风场详细数据")
 
     # 为每个风场创建标签页
     farm_tabs = st.tabs([f"🏭 风场 {i + 1}" for i in range(n_farms)])
@@ -75,29 +89,175 @@ def display_multi_farm_storage_analysis(result, df):
         with tab:
             if i < len(storage_results_list):
                 farm_storage_results = storage_results_list[i]
-                st.markdown(f"#### 风场 {i + 1} - {best_strategy}策略")
+                st.markdown(f"#### 风场 {i + 1} - {best_strategy}策略详细分析")
 
-                # 为每个风场显示完整的分析
-                col1, col2 = st.columns(2)
+                # 1. 功率平衡分析
+                st.markdown("##### 📊 功率平衡分析")
+                display_power_balance_analysis(farm_storage_results, best_strategy, f"风场 {i + 1}")
 
-                with col1:
-                    display_power_balance_analysis(farm_storage_results, best_strategy, f"风场 {i + 1}")
+                st.markdown("---")  # 添加分割线
 
-                with col2:
-                    display_storage_state_analysis(farm_storage_results, best_strategy, f"风场 {i + 1}")
+                # 2. 储能状态分析
+                st.markdown("##### 🔋 储能状态分析")
+                display_storage_state_analysis(farm_storage_results, best_strategy, f"风场 {i + 1}")
 
-                # 性能指标
-                st.markdown("##### 性能指标")
+                st.markdown("---")  # 添加分割线
+
+                # 3. 详细充放电状态数据
+                st.markdown("##### 📈 详细充放电状态")
+                display_detailed_storage_status(farm_storage_results, best_strategy, f"风场 {i + 1}")
+
+                st.markdown("---")  # 添加分割线
+
+                # 4. 调度性能指标
+                st.markdown("##### 🎯 调度性能指标")
                 display_scheduling_performance_metrics(farm_storage_results, best_strategy, f"风场 {i + 1}")
             else:
-                st.info(f"风场 {i + 1} 暂无储能调度数据")
+                st.warning(f"⚠️ 风场 {i + 1} 暂无储能调度数据")
 
-    # 显示策略效果对比（所有风场）
+    # 在所有风场标签页之后，添加综合对比分析
     st.markdown("---")
-    display_strategy_effect_comparison(result)
+    st.markdown("### 📊 多风场综合对比分析")
 
-    # 显示多风场综合对比
-    display_multi_farm_comparison(result)
+    # 创建两个标签页：性能对比和策略效果
+    comparison_tabs = st.tabs(["📈 风场性能对比", "🔄 策略效果对比"])
+
+    with comparison_tabs[0]:
+        display_multi_farm_comparison(result)
+
+    with comparison_tabs[1]:
+        if 'strategy_comparison' in result:
+            display_strategy_effect_comparison(result)
+        else:
+            st.info("暂无策略比较数据")
+
+
+def display_multi_farm_comparison(result):
+    """
+    显示多风场综合对比
+    """
+    st.markdown("#### 📊 多风场性能对比")
+
+    if 'storage_results' not in result or not isinstance(result['storage_results'], list):
+        st.info("暂无多风场数据")
+        return
+
+    storage_results_list = result['storage_results']
+    n_farms = len(storage_results_list)
+
+    # 收集各风场性能指标
+    farm_metrics = []
+    for i, farm_storage in enumerate(storage_results_list):
+        metrics = calculate_scheduling_performance(farm_storage)
+        metrics['风场编号'] = i + 1
+
+        # 添加储能参数信息
+        if 'storage_params' in farm_storage:
+            storage_params = farm_storage['storage_params']
+            metrics.update({
+                '储能容量_kWh': storage_params.get('storage_capacity', 0),
+                '储能功率_kW': storage_params.get('storage_power', 0),
+                '策略类型': storage_params.get('storage_strategy', '未知')
+            })
+        farm_metrics.append(metrics)
+
+    # 创建对比表格
+    comparison_data = []
+    for metrics in farm_metrics:
+        comparison_data.append({
+            '风场': f"风场 {metrics['风场编号']}",
+            '储能容量(kWh)': f"{metrics.get('储能容量_kWh', 0):.0f}",
+            '储能功率(kW)': f"{metrics.get('储能功率_kW', 0):.0f}",
+            '策略类型': metrics.get('策略类型', '未知'),
+            '平滑效果 (%)': f"{metrics['smoothing_effect']:.1f}",
+            '储能利用率 (%)': f"{metrics['storage_utilization']:.1f}",
+            '弃风率 (%)': f"{metrics['curtailment_rate']:.1f}",
+            '系统效率 (%)': f"{metrics['system_efficiency']:.1f}",
+            'SOC保持率 (%)': f"{metrics['soc_maintenance']:.1f}"
+        })
+
+    comparison_df = pd.DataFrame(comparison_data)
+
+    # 使用条件格式突出显示性能指标
+    def color_performance(val):
+        try:
+            num_val = float(str(val).replace('%', ''))
+            if num_val >= 80:
+                return 'background-color: #d4edda; color: #155724;'  # 优秀 - 绿色
+            elif num_val >= 60:
+                return 'background-color: #fff3cd; color: #856404;'  # 良好 - 黄色
+            else:
+                return 'background-color: #f8d7da; color: #721c24;'  # 待改进 - 红色
+        except:
+            return ''
+
+    # 应用样式
+    styled_df = comparison_df.style.applymap(color_performance, subset=[
+        '平滑效果 (%)', '储能利用率 (%)', '系统效率 (%)', 'SOC保持率 (%)'
+    ])
+
+    st.dataframe(styled_df, use_container_width=True)
+
+    # 创建性能对比图表
+    fig = go.Figure()
+
+    farms = [f"风场 {i + 1}" for i in range(n_farms)]
+    metrics_to_compare = ['smoothing_effect', 'storage_utilization', 'system_efficiency', 'soc_maintenance']
+    metric_names = ['平滑效果', '储能利用率', '系统效率', 'SOC保持率']
+
+    for metric, name in zip(metrics_to_compare, metric_names):
+        values = [farm_metrics[i][metric] for i in range(n_farms)]
+        fig.add_trace(go.Bar(
+            name=name,
+            x=farms,
+            y=values,
+            text=[f"{v:.1f}%" for v in values],
+            textposition='auto'
+        ))
+
+    fig.update_layout(
+        title="多风场储能性能对比",
+        barmode='group',
+        height=400,
+        yaxis_title="性能指标值 (%)",
+        yaxis=dict(range=[0, 100]),
+        template="plotly_white"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 添加储能参数对比图表
+    if all('储能容量_kWh' in metrics for metrics in farm_metrics):
+        fig2 = go.Figure()
+
+        capacities = [metrics.get('储能容量_kWh', 0) for metrics in farm_metrics]
+        powers = [metrics.get('储能功率_kW', 0) for metrics in farm_metrics]
+
+        fig2.add_trace(go.Bar(
+            name='储能容量 (kWh)',
+            x=farms,
+            y=capacities,
+            text=[f"{c:.0f}" for c in capacities],
+            textposition='auto'
+        ))
+
+        fig2.add_trace(go.Bar(
+            name='储能功率 (kW)',
+            x=farms,
+            y=powers,
+            text=[f"{p:.0f}" for p in powers],
+            textposition='auto'
+        ))
+
+        fig2.update_layout(
+            title="多风场储能配置对比",
+            barmode='group',
+            height=400,
+            yaxis_title="储能参数值",
+            template="plotly_white"
+        )
+
+        st.plotly_chart(fig2, use_container_width=True)
 
 
 def display_multi_farm_comparison(result):
@@ -164,7 +324,7 @@ def display_multi_farm_comparison(result):
 
 def display_power_balance_analysis(storage_results, strategy, farm_name="风场"):
     """
-    显示功率平衡分析
+    显示功率平衡分析（只保留图表部分）
     """
     st.markdown(f"**🔌 功率平衡分析 - {farm_name} ({strategy}策略)**")
 
@@ -236,7 +396,8 @@ def display_power_balance_analysis(storage_results, strategy, farm_name="风场"
         yaxis_title="功率 (kW)",
         hovermode="x unified",
         height=400,
-        showlegend=True
+        showlegend=True,
+        template="plotly_white"
     )
 
     st.plotly_chart(fig, use_container_width=True)
@@ -263,6 +424,330 @@ def display_power_balance_analysis(storage_results, strategy, farm_name="风场"
         if 'grid_power' in schedule_data.columns:
             grid_fluctuation = schedule_data['grid_power'].std()
             st.metric("电网波动", f"{grid_fluctuation:.0f} kW")
+
+
+def display_detailed_storage_status(storage_results, strategy, farm_name="风场"):
+    """
+    专门显示详细充放电状态数据表格 - 显示完整数据
+    """
+    if 'schedule_data' not in storage_results:
+        st.error("❌ 调度数据格式错误")
+        return
+
+    schedule_data = storage_results['schedule_data']
+
+    # 显示完整数据
+    st.info(f"📋 显示{farm_name}完整充放电状态数据（共{len(schedule_data)}个时间点）")
+
+    # 创建状态标识
+    def get_operation_status(row):
+        """获取操作状态"""
+        if 'battery_power' not in row:
+            return "待机"
+
+        battery_power = row['battery_power']
+        if battery_power > 0:
+            return "放电"
+        elif battery_power < 0:
+            return "充电"
+        else:
+            return "待机"
+
+    def get_power_balance_status(row):
+        """获取功率平衡状态"""
+        if 'wind_power' not in row or 'grid_power' not in row:
+            return "未知"
+
+        wind_power = row['wind_power']
+        grid_power = row['grid_power']
+
+        if wind_power > grid_power:
+            return "风电过剩"
+        elif wind_power < grid_power:
+            return "风电不足"
+        else:
+            return "平衡"
+
+    # 使用完整数据
+    table_data = []
+    for i, (_, row) in enumerate(schedule_data.iterrows()):
+        # 时间信息
+        if 'timestamp' in row:
+            time_str = str(row['timestamp'])
+        elif 'hour' in row:
+            hour = int(row['hour'])
+            minute = int(row['minute']) if 'minute' in row else 0
+            time_str = f"{hour:02d}:{minute:02d}"
+        else:
+            time_str = f"时间点 {i + 1}"
+
+        # 获取状态
+        operation_status = get_operation_status(row)
+        balance_status = get_power_balance_status(row)
+
+        # 功率数据
+        wind_power = row.get('wind_power', 0)
+        grid_power = row.get('grid_power', 0)
+        battery_power = row.get('battery_power', 0)
+        soc = row.get('storage_soc', 0) * 100 if 'storage_soc' in row else 0
+
+        # 弃风功率
+        wind_curtailment = row.get('wind_curtailment', 0)
+
+        table_data.append({
+            "序号": i + 1,
+            "时间": time_str,
+            "风电功率(kW)": f"{wind_power:.1f}",
+            "电网功率(kW)": f"{grid_power:.1f}",
+            "储能功率(kW)": f"{battery_power:+.1f}",  # 使用+号显示正负
+            "储能状态": operation_status,
+            "SOC(%)": f"{soc:.1f}",
+            "功率平衡": balance_status,
+            "弃风功率(kW)": f"{wind_curtailment:.1f}",
+            "净功率(kW)": f"{(wind_power + battery_power):.1f}"
+        })
+
+    # 创建数据框
+    status_df = pd.DataFrame(table_data)
+
+    # 添加筛选功能
+    st.markdown("**🔍 数据筛选**")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        # 按状态筛选
+        status_options = ["全部", "充电", "放电", "待机"]
+        selected_status = st.selectbox("储能状态筛选", status_options, key=f"status_filter_{farm_name}")
+
+    with col2:
+        # 按功率平衡筛选
+        balance_options = ["全部", "风电过剩", "风电不足", "平衡"]
+        selected_balance = st.selectbox("功率平衡筛选", balance_options, key=f"balance_filter_{farm_name}")
+
+    with col3:
+        # 按时间范围筛选
+        if 'hour' in schedule_data.columns:
+            min_hour = int(schedule_data['hour'].min())
+            max_hour = int(schedule_data['hour'].max())
+            time_range = st.slider(
+                "时间范围筛选(小时)",
+                min_hour, max_hour,
+                (min_hour, max_hour),
+                key=f"time_filter_{farm_name}"
+            )
+
+    # 应用筛选
+    filtered_df = status_df.copy()
+
+    if selected_status != "全部":
+        filtered_df = filtered_df[filtered_df["储能状态"] == selected_status]
+
+    if selected_balance != "全部":
+        filtered_df = filtered_df[filtered_df["功率平衡"] == selected_balance]
+
+    if 'hour' in schedule_data.columns:
+        # 需要从原始时间字符串提取小时
+        def extract_hour(time_str):
+            try:
+                # 处理格式如 "08:30"
+                if ":" in time_str:
+                    return int(time_str.split(":")[0])
+                return 0
+            except:
+                return 0
+
+        filtered_df = filtered_df[filtered_df["时间"].apply(extract_hour).between(time_range[0], time_range[1])]
+
+    # 显示筛选结果统计
+    st.info(f"📊 显示 {len(filtered_df)} 条数据（共 {len(status_df)} 条）")
+
+    # 使用条件格式突出显示重要信息
+    def color_operation_status(val):
+        """根据操作状态着色"""
+        if val == "充电":
+            return 'background-color: #d4edda; color: #155724;'  # 绿色
+        elif val == "放电":
+            return 'background-color: #f8d7da; color: #721c24;'  # 红色
+        else:
+            return 'background-color: #e2e3e5; color: #383d41;'  # 灰色
+
+    def color_balance_status(val):
+        """根据平衡状态着色"""
+        if val == "风电过剩":
+            return 'background-color: #fff3cd; color: #856404;'  # 黄色
+        elif val == "风电不足":
+            return 'background-color: #cce5ff; color: #004085;'  # 蓝色
+        else:
+            return ''
+
+    # 应用样式
+    styled_df = filtered_df.style.applymap(color_operation_status, subset=['储能状态'])
+    styled_df = styled_df.applymap(color_balance_status, subset=['功率平衡'])
+
+    # 添加分页功能
+    page_size = 50  # 每页显示50条数据
+    total_pages = max(1, (len(filtered_df) + page_size - 1) // page_size)
+
+    # 页码选择
+    current_page = st.selectbox(
+        "选择页码",
+        range(1, total_pages + 1),
+        key=f"page_select_{farm_name}"
+    )
+
+    # 计算当前页数据
+    start_idx = (current_page - 1) * page_size
+    end_idx = min(start_idx + page_size, len(filtered_df))
+    page_df = filtered_df.iloc[start_idx:end_idx]
+
+    # 显示当前页数据
+    st.write(f"📄 第 {current_page} 页，显示第 {start_idx + 1} - {end_idx} 条数据")
+
+    # 显示表格（不设置固定高度，让表格根据内容自适应）
+    st.dataframe(
+        page_df.style.applymap(color_operation_status, subset=['储能状态'])
+        .applymap(color_balance_status, subset=['功率平衡']),
+        use_container_width=True
+    )
+
+    # 添加数据导出功能
+    st.markdown("**💾 数据导出**")
+    col_export1, col_export2, col_export3 = st.columns(3)
+
+    with col_export1:
+        if st.button(f"📥 导出筛选数据 (CSV)", key=f"export_csv_{farm_name}"):
+            csv = filtered_df.to_csv(index=False)
+            st.download_button(
+                label="点击下载 CSV",
+                data=csv,
+                file_name=f"{farm_name}_储能调度数据.csv",
+                mime="text/csv"
+            )
+
+    with col_export2:
+        if st.button(f"📥 导出完整数据 (CSV)", key=f"export_full_csv_{farm_name}"):
+            csv = status_df.to_csv(index=False)
+            st.download_button(
+                label="点击下载完整 CSV",
+                data=csv,
+                file_name=f"{farm_name}_完整储能调度数据.csv",
+                mime="text/csv"
+            )
+
+    with col_export3:
+        if st.button(f"📊 显示统计摘要", key=f"show_stats_{farm_name}"):
+            show_data_statistics(filtered_df, farm_name)
+
+    # 添加汇总统计
+    st.markdown("**📈 充放电统计汇总**")
+
+    if 'battery_power' in schedule_data.columns:
+        # 计算统计信息
+        charge_data = schedule_data[schedule_data['battery_power'] < 0]
+        discharge_data = schedule_data[schedule_data['battery_power'] > 0]
+        idle_data = schedule_data[schedule_data['battery_power'] == 0]
+
+        total_time = len(schedule_data)
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            charge_time = len(charge_data)
+            charge_ratio = (charge_time / total_time * 100) if total_time > 0 else 0
+            avg_charge_power = abs(charge_data['battery_power'].mean()) if len(charge_data) > 0 else 0
+            total_charge_energy = abs(charge_data['battery_power'].sum() * (10 / 60)) if len(charge_data) > 0 else 0
+            st.metric(
+                "充电统计",
+                f"{charge_ratio:.1f}%",
+                f"{charge_time}个时段，平均{avg_charge_power:.0f} kW，总能量{total_charge_energy:.0f} kWh"
+            )
+
+        with col2:
+            discharge_time = len(discharge_data)
+            discharge_ratio = (discharge_time / total_time * 100) if total_time > 0 else 0
+            avg_discharge_power = discharge_data['battery_power'].mean() if len(discharge_data) > 0 else 0
+            total_discharge_energy = discharge_data['battery_power'].sum() * (10 / 60) if len(discharge_data) > 0 else 0
+            st.metric(
+                "放电统计",
+                f"{discharge_ratio:.1f}%",
+                f"{discharge_time}个时段，平均{avg_discharge_power:.0f} kW，总能量{total_discharge_energy:.0f} kWh"
+            )
+
+        with col3:
+            idle_time = len(idle_data)
+            idle_ratio = (idle_time / total_time * 100) if total_time > 0 else 0
+            st.metric(
+                "待机统计",
+                f"{idle_ratio:.1f}%",
+                f"{idle_time}个时段"
+            )
+
+
+def show_data_statistics(data_df, farm_name):
+    """
+    显示数据统计摘要
+    """
+    if len(data_df) == 0:
+        st.warning("没有数据可统计")
+        return
+
+    st.markdown(f"#### 📊 {farm_name}数据统计摘要")
+
+    # 创建统计卡片
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        total_records = len(data_df)
+        st.metric("总记录数", f"{total_records}")
+
+    with col2:
+        charge_count = len(data_df[data_df["储能状态"] == "充电"])
+        st.metric("充电次数", f"{charge_count}")
+
+    with col3:
+        discharge_count = len(data_df[data_df["储能状态"] == "放电"])
+        st.metric("放电次数", f"{discharge_count}")
+
+    with col4:
+        idle_count = len(data_df[data_df["储能状态"] == "待机"])
+        st.metric("待机次数", f"{idle_count}")
+
+    # 更多统计信息
+    if len(data_df) > 0:
+        # 提取数值数据
+        def extract_numeric(col_name):
+            try:
+                # 移除单位并转换为浮点数
+                return data_df[col_name].str.replace('kW', '').str.replace('kWh', '').str.replace('%', '').str.replace(
+                    '+', '').astype(float)
+            except:
+                return pd.Series([0] * len(data_df))
+
+        wind_power = extract_numeric("风电功率(kW)")
+        grid_power = extract_numeric("电网功率(kW)")
+        battery_power = extract_numeric("储能功率(kW)")
+
+        if len(wind_power) > 0:
+            st.markdown("**功率统计**")
+            stats_col1, stats_col2, stats_col3 = st.columns(3)
+
+            with stats_col1:
+                st.write("风电功率")
+                st.write(f"- 平均: {wind_power.mean():.1f} kW")
+                st.write(f"- 最大: {wind_power.max():.1f} kW")
+                st.write(f"- 最小: {wind_power.min():.1f} kW")
+
+            with stats_col2:
+                st.write("电网功率")
+                st.write(f"- 平均: {grid_power.mean():.1f} kW")
+                st.write(f"- 最大: {grid_power.max():.1f} kW")
+                st.write(f"- 最小: {grid_power.min():.1f} kW")
+
+            with stats_col3:
+                st.write("储能功率")
+                st.write(f"- 平均: {battery_power.mean():.1f} kW")
+                st.write(f"- 最大: {battery_power.max():.1f} kW")
+                st.write(f"- 最小: {battery_power.min():.1f} kW")
 
 
 def display_storage_state_analysis(storage_results, strategy, farm_name="风场"):
