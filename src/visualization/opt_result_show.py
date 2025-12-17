@@ -14,6 +14,24 @@ from src.utils.plotting_functions import create_convergence_chart, create_wind_f
 def display_optimization_result(result, df):
     st.subheader(f"最优风电场布局与算法收敛分析（{result.get('algorithm', '未知算法')}）")
 
+    # 🔧 明确获取收敛曲线数据
+    algorithm_name = result.get('algorithm', '未知算法')
+
+    # 如果是从多算法对比来的结果，需要特殊处理
+    if 'comparison_source' in result:
+        algorithm_name = result.get('comparison_source', algorithm_name)
+
+    # 获取正确的收敛曲线
+    fitness_history = result.get("fitness_history")
+
+    # 如果收敛曲线过长（超过5000次），截取或警告
+    if fitness_history and len(fitness_history) > 5000:
+        st.warning(f"⚠️ 收敛曲线包含 {len(fitness_history)} 次迭代，显示前5000次")
+        fitness_history = fitness_history[:5000]
+
+    # 显示算法信息
+    st.info(f"**算法**: {algorithm_name} | **迭代次数**: {len(fitness_history) if fitness_history else 'N/A'}")
+
     # 🔧 使用真实计算的最优位置数据
     if 'best_positions_data' in result and not result['best_positions_data'].empty:
         # 使用优化算法返回的真实最优位置数据

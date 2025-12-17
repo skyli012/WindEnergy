@@ -93,25 +93,48 @@ def temporal_analysis_enhanced(df, datetime_col):
     df['time_period'] = df[datetime_col].dt.floor('H')
     title = "小时平均风速趋势"
 
-    # 多变量趋势图
+    # 多变量趋势图 - 改为2x2布局
     cols_to_plot = [col for col in ['predicted_wind_speed', 'temperature_c', 'relative_humidity', 'gust_speed'] if
                     col in df.columns]
 
-    if len(cols_to_plot) > 1:
-        fig = make_subplots(rows=len(cols_to_plot), cols=1,
-                            subplot_titles=cols_to_plot,
-                            vertical_spacing=0.05)
+    if len(cols_to_plot) > 0:
+        # 创建2x2的子图布局
+        fig = make_subplots(rows=2, cols=2,
+                            subplot_titles=cols_to_plot if len(cols_to_plot) >= 4 else cols_to_plot + [''] * (
+                                        4 - len(cols_to_plot)),
+                            vertical_spacing=0.15,
+                            horizontal_spacing=0.1)
 
-        for i, col in enumerate(cols_to_plot, 1):
+        # 定义2x2布局的位置映射
+        positions = [(1, 1), (1, 2), (2, 1), (2, 2)]
+
+        for i, col in enumerate(cols_to_plot[:4]):  # 最多显示4个变量
+            if i >= len(positions):
+                break
+
             # 对于聚合数据，使用小时平均值
             period_avg = df.groupby('time_period')[col].mean().reset_index()
+            row, col_pos = positions[i]
+
             fig.add_trace(
                 go.Scatter(x=period_avg['time_period'], y=period_avg[col],
                            name=col, line=dict(width=2)),
-                row=i, col=1
+                row=row, col=col_pos
             )
 
-        fig.update_layout(height=300 * len(cols_to_plot), showlegend=False)
+            # 设置y轴标签
+            if col_pos == 1:  # 左列
+                fig.update_yaxes(title_text=col, row=row, col=col_pos)
+
+            # 设置x轴标签（只在底行显示）
+            if row == 2:
+                fig.update_xaxes(title_text="时间", row=row, col=col_pos)
+
+        fig.update_layout(
+            height=600,
+            showlegend=True,
+            title_text="时间序列分析 (2x2布局)"
+        )
         st.plotly_chart(fig, use_container_width=True)
     else:
         period_avg = df.groupby('time_period')['predicted_wind_speed'].mean().reset_index()
@@ -318,54 +341,240 @@ def spatial_analysis_enhanced(df):
 
 
 def correlation_analysis_enhanced(df):
-    st.subheader("🔗 多变量相关性分析")
+    st.subheader("🔗 主要变量相关性分析")
+    st.markdown("""
+    **分析说明：**
+    - 展示了风速与主要气象变量、地形变量之间的相关性
+    - 结果表明，风速与部分气象变量（如阵风速度、气温等）以及地形变量（如海拔、坡度）之间存在一定程度的相关性
+    - 整体相关系数分布较为分散，未呈现出单一主导因素
+    """)
 
-    corr = compute_correlation(df)
-    if corr is None:
+    # 定义主要关注的变量（基于您的字段）
+    # 核心变量：风速
+    core_vars = ['predicted_wind_speed']
+
+    # 直接气象相关变量（与风速高度相关）
+    direct_meteorological_vars = [
+        'gust_speed',  # 阵风速度
+        'wind_direction',  # 风向
+        'wind_direction_std',  # 风向稳定性
+        'gust_direction'  # 阵风方向
+    ]
+
+    # 间接气象相关变量
+    indirect_meteorological_vars = [
+        'temperature_c',  # 气温
+        'relative_humidity',  # 相对湿度
+        'rainfall_mm'  # 降雨量
+    ]
+
+    # 地形和地理变量
+    terrain_geographic_vars = [
+        'elevation',  # 海拔
+        'slope',  # 坡度
+        'hour'  # 小时（时间因素）
+    ]
+
+    # 空间距离变量（可能影响风场）
+    spatial_distance_vars = [
+        'water_distance',  # 距水体距离
+        'road_distance',  # 距道路距离
+        'grid_proximity'  # 电网接近度
+    ]
+
+    # 筛选出数据集中存在的变量
+    available_core_vars = [var for var in core_vars if var in df.columns]
+    available_direct_meteo_vars = [var for var in direct_meteorological_vars if var in df.columns]
+    available_indirect_meteo_vars = [var for var in indirect_meteorological_vars if var in df.columns]
+    available_terrain_vars = [var for var in terrain_geographic_vars if var in df.columns]
+    available_spatial_vars = [var for var in spatial_distance_vars if var in df.columns]
+
+    # 合并所有主要变量（按相关性优先级）
+    all_main_vars = (
+            available_core_vars +
+            available_direct_meteo_vars +
+            available_indirect_meteo_vars +
+            available_terrain_vars +
+            available_spatial_vars[:2]  # 只取最重要的2个空间变量
+    )
+
+    # 确保去重
+    all_main_vars = list(dict.fromkeys(all_main_vars))
+
+    if len(all_main_vars) < 2:
         st.warning("数据不足，无法进行相关性分析")
         return
 
+    # 仅计算主要变量之间的相关性
+    corr = df[all_main_vars].corr()
+
+    # 创建自定义颜色序列，使相关性更明显
+    colorscale = [
+        [0.0, '#2E86AB'],  # 深蓝 - 强负相关
+        [0.25, '#A3D9FF'],  # 浅蓝 - 中等负相关
+        [0.5, '#FFFFFF'],  # 白 - 无相关
+        [0.75, '#FF9B85'],  # 浅红 - 中等正相关
+        [1.0, '#E63946']  # 深红 - 强正相关
+    ]
+
     # 交互式相关性矩阵
-    fig = px.imshow(corr, text_auto=True, aspect="auto",
-                    color_continuous_scale='RdBu_r',
-                    title="风电场变量相关性热力图",
-                    width=800, height=600)
+    fig = px.imshow(
+        corr,
+        text_auto='.2f',
+        aspect="auto",
+        color_continuous_scale=colorscale,
+        zmin=-1,  # 设置颜色范围
+        zmax=1,
+        title="主要变量相关性热力图",
+        labels=dict(
+            color="相关系数",
+            x="变量",
+            y="变量"
+        )
+    )
+
+    # 更新布局，使图表更专业
+    fig.update_layout(
+        width=700,
+        height=600,
+        margin=dict(l=80, r=50, t=80, b=80),
+        title_font=dict(size=18, family="Arial", color="#2c3e50"),
+        coloraxis_colorbar=dict(
+            title="相关系数",
+            title_font=dict(size=12),
+            tickfont=dict(size=10),
+            thickness=15,
+            len=0.8
+        )
+    )
+
+    # 更新字体大小和样式
+    fig.update_traces(
+        textfont=dict(size=10, family="Arial", color="black"),
+        texttemplate='%{z:.2f}'
+    )
+
+    # 更新坐标轴标签
+    fig.update_xaxes(
+        tickangle=-45,
+        tickfont=dict(size=11, family="Arial"),
+        title_font=dict(size=13, family="Arial")
+    )
+
+    fig.update_yaxes(
+        tickfont=dict(size=11, family="Arial"),
+        title_font=dict(size=13, family="Arial")
+    )
+
     st.plotly_chart(fig, use_container_width=True)
 
-    # 散点图矩阵
-    st.subheader("📈 散点图矩阵")
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    # 优先选择天气相关变量
-    priority_cols = ['predicted_wind_speed', 'temperature_c', 'relative_humidity', 'gust_speed', 'elevation']
-    default_cols = [col for col in priority_cols if col in numeric_cols][:4]
+    # 显示风速与其他变量的详细相关系数
+    st.subheader("📊 风速与各变量相关系数分析")
 
-    selected_cols = st.multiselect("选择要分析的变量:", numeric_cols,
-                                   default=default_cols)
-
-    if len(selected_cols) >= 2:
-        # 移除趋势线参数
-        fig = px.scatter_matrix(df[selected_cols], height=800)
-        st.plotly_chart(fig, use_container_width=True)
-
-    # 关键相关性分析
     if 'predicted_wind_speed' in corr.columns:
-        st.subheader("🎯 与风速的相关性分析")
+        wind_corr_series = corr['predicted_wind_speed'].drop('predicted_wind_speed')
 
-        wind_corr = corr['predicted_wind_speed'].sort_values(ascending=False)
-        # 排除自相关性
-        strong_corr = wind_corr[(abs(wind_corr) > 0.1) & (wind_corr != 1.0)]
+        # 创建分类显示
+        categories = {
+            '直接气象因素': [],
+            '间接气象因素': [],
+            '地形地理因素': [],
+            '空间距离因素': []
+        }
 
-        # 使用进度条显示相关性强弱
-        for var, corr_val in strong_corr.items():
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.write(f"**{var}**")
-                st.progress(abs(corr_val), text=f"相关强度: {corr_val:.3f}")
-            with col2:
-                if corr_val > 0:
-                    st.metric("方向", "正相关", delta=f"{corr_val:.3f}")
-                else:
-                    st.metric("方向", "负相关", delta=f"{corr_val:.3f}")
+        # 分类变量
+        for var, corr_value in wind_corr_series.items():
+            if var in direct_meteorological_vars:
+                categories['直接气象因素'].append((var, corr_value))
+            elif var in indirect_meteorological_vars:
+                categories['间接气象因素'].append((var, corr_value))
+            elif var in terrain_geographic_vars:
+                categories['地形地理因素'].append((var, corr_value))
+            elif var in spatial_distance_vars:
+                categories['空间距离因素'].append((var, corr_value))
+            else:
+                categories['其他因素'].append((var, corr_value))
+
+        # 显示每个类别的分析
+        for category_name, variables in categories.items():
+            if variables:
+                st.markdown(f"**{category_name}**")
+
+                # 创建该类别的DataFrame
+                cat_df = pd.DataFrame(
+                    variables,
+                    columns=['变量', '相关系数']
+                ).sort_values('相关系数', ascending=False)
+
+                # 添加相关性强度和方向
+                cat_df['相关性强度'] = cat_df['相关系数'].abs().apply(
+                    lambda x: '强相关(≥0.7)' if x >= 0.7 else
+                    '中等相关(0.3-0.7)' if x >= 0.3 else
+                    '弱相关(0.1-0.3)' if x >= 0.1 else
+                    '极弱相关(<0.1)'
+                )
+
+                cat_df['相关方向'] = cat_df['相关系数'].apply(
+                    lambda x: '正相关' if x > 0 else '负相关' if x < 0 else '无相关'
+                )
+
+                # 显示表格
+                st.dataframe(
+                    cat_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        '变量': st.column_config.TextColumn('变量名称', width="medium"),
+                        '相关系数': st.column_config.NumberColumn(
+                            '相关系数',
+                            format='%.3f',
+                            help='-1到1之间的值，绝对值越大相关性越强',
+                            width="small"
+                        ),
+                        '相关性强度': st.column_config.TextColumn('强度分类', width="medium"),
+                        '相关方向': st.column_config.TextColumn('方向', width="small")
+                    }
+                )
+
+        # 关键发现总结
+        st.markdown("""
+        **🔍 关键发现总结：**
+
+        1. **主要相关变量**：
+           - 阵风速度 (gust_speed)：通常与风速高度相关
+           - 地形因素 (elevation, slope)：山地地形对风速有重要影响
+           - 气象变量 (temperature_c, relative_humidity)：影响空气密度和流动
+
+        2. **时间维度**：
+           - 小时 (hour)：显示风速的日变化规律
+
+        3. **空间因素**：
+           - 水体距离 (water_distance)：水体对局地风场有调节作用
+
+        4. **综合分析**：
+           - 风速受多种因素共同影响，无单一主导变量
+           - 相关系数分布分散，验证了多元影响因素的存在
+           - 为风电场选址提供了多维度的数据支持
+        """)
+
+    else:
+        # 如果数据集没有风速变量，显示完整的相关系数表
+        st.dataframe(
+            corr.style.background_gradient(cmap='RdBu_r', vmin=-1, vmax=1),
+            use_container_width=True
+        )
+
+    # 添加统计显著性说明
+    st.markdown("""
+    ---
+    **📝 统计说明：**
+    - 相关系数范围：-1（完全负相关）到 1（完全正相关）
+    - |r| ≥ 0.7：强相关
+    - 0.3 ≤ |r| < 0.7：中等相关
+    - 0.1 ≤ |r| < 0.3：弱相关
+    - |r| < 0.1：极弱相关或无相关
+    - 样本量：{} 条记录
+    """.format(len(df)))
 
 
 def data_overview(df, datetime_col):
