@@ -4,13 +4,10 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from itertools import product
-from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
 import warnings
 import random
-import time
 
 warnings.filterwarnings('ignore')
 
@@ -43,8 +40,8 @@ except ImportError:
 
 # 导入你的核心模块（请确保路径正确）
 try:
-    from src.optimization.algorithm_convergence_curve import call_optimize_function_with_all_strategies
-    from src.visualization.opt_result_show import display_optimization_result, display_wind_utilization_analysis
+    from src.strategy_optimization import call_optimize_function_with_all_strategies
+    from src.strategy_optimization import display_optimization_result, display_wind_utilization_analysis
 except ImportError as e:
     st.error(f"模块导入失败: {e}")
     st.stop()
@@ -351,7 +348,7 @@ def prediction_optimization_comparison_page():
         with col3:
             with st.container():
                 st.markdown("**🏗️ 风场配置**")
-                n_farms = st.slider("风场数量", 1, 4, st.session_state.get('n_farms', 2))
+                n_farms = st.slider("风场数量", 1, 4, st.session_state.get('n_farms', 1))
                 st.session_state.n_farms = n_farms
 
                 n_turbines = st.slider("单场风机数", 1, 7, st.session_state.get('n_turbines_per_farm', 4))
@@ -527,17 +524,21 @@ def prediction_optimization_comparison_page():
                 with tab2:
                     st.markdown("#### 🔥 模拟退火算法参数 (已为XGBoost优化)")
                     st.info("此参数已专门针对XGBoost预测模型优化，可获得最佳协同效果")
-                    sa_col1, sa_col2 = st.columns(2)
+
+                    # 创建三列布局
+                    sa_col1, sa_col2, sa_col3 = st.columns(3)
+
                     with sa_col1:
-                        sa_initial_temp = st.slider("初始温度", 100, 5000, 1500, key="sa_temp",  # 提高初始温度
+                        sa_initial_temp = st.slider("初始温度", 100, 5000, 3000, key="sa_temp",
                                                     help="初始温度越高，接受劣解概率越大，全局搜索能力越强")
-                        sa_cooling_rate = st.slider("降温速率", 0.85, 0.99, 0.96, key="sa_cool",  # 降低降温速率
-                                                    help="降温速率越慢，搜索越充分")
+
                     with sa_col2:
-                        sa_iterations = st.slider("每温度迭代次数", 10, 200, 100, key="sa_iter",  # 增加迭代次数
+                        sa_cooling_rate = st.slider("降温速率", 0.80, 0.99, 0.85, 0.01, key="sa_cool",
+                                                    help="降温速率越慢，搜索越充分")
+
+                    with sa_col3:
+                        sa_iterations = st.slider("每温度迭代次数", 10, 200, 100, key="sa_iter",
                                                   help="每温度下迭代次数越多，局部搜索越充分")
-                        sa_early_stopping = st.slider("早停轮数", 5, 50, 25, key="sa_stop",
-                                                      help="连续多少轮无改进则停止")
 
                 with tab3:
                     pso_col1, pso_col2 = st.columns(2)
@@ -566,27 +567,21 @@ def prediction_optimization_comparison_page():
                 with tab5:
                     st.markdown("#### 🌳 XGBoost参数 (已为模拟退火算法优化)")
                     st.success("✅ 此参数配置已优化，与模拟退火算法配合效果最佳")
-                    xgb_col1, xgb_col2 = st.columns(2)
-                    with xgb_col1:
-                        xgb_n_estimators = st.slider("迭代次数", 50, 500, 200, step=50, key="xgb_n_estimators",
-                                                     # 增加迭代次数
-                                                     help="增加树的数量可以提高模型精度")
-                        xgb_learning_rate = st.slider("学习率", 0.01, 0.3, 0.06, 0.01, key="xgb_learning_rate",  # 降低学习率
-                                                      help="降低学习率可以防止过拟合")
-                    with xgb_col2:
-                        xgb_max_depth = st.slider("最大深度", 3, 15, 9, key="xgb_max_depth",  # 增加最大深度
-                                                  help="适当增加深度可以捕获更复杂模式")
-                        xgb_subsample = st.slider("子采样率", 0.5, 1.0, 0.95, 0.05, key="xgb_subsample",  # 提高子采样率
-                                                  help="提高子采样率可以使用更多数据")
 
-                    # 添加更多XGBoost参数
-                    xgb_col3, xgb_col4 = st.columns(2)
-                    with xgb_col3:
-                        xgb_colsample_bytree = st.slider("特征采样率", 0.5, 1.0, 0.85, 0.05, key="xgb_colsample",
-                                                         help="每棵树使用的特征比例")
-                    with xgb_col4:
-                        xgb_reg_lambda = st.slider("L2正则化", 0.0, 5.0, 0.8, 0.1, key="xgb_reg_lambda",  # 降低正则化
-                                                   help="L2正则化项，防止过拟合")
+                    # 使用单行三列布局
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        xgb_n_estimators = st.slider("估计器数量", 50, 500, 100, step=50, key="xgb_n_estimators",
+                                                     help="树的数量，增加可提高精度但增加训练时间")
+
+                    with col2:
+                        xgb_learning_rate = st.slider("学习率", 0.01, 0.3, 0.05, 0.01, key="xgb_learning_rate",
+                                                      help="控制每棵树的贡献，小值更稳定但需要更多树")
+
+                    with col3:
+                        xgb_max_depth = st.slider("最大深度", 3, 15, 6, key="xgb_max_depth",
+                                                  help="树的最大深度，增加可捕获复杂模式但可能过拟合")
 
                 with tab6:
                     # CatBoost参数
@@ -624,9 +619,10 @@ def prediction_optimization_comparison_page():
                         'n_estimators': xgb_n_estimators,
                         'learning_rate': xgb_learning_rate,
                         'max_depth': xgb_max_depth,
-                        'subsample': xgb_subsample,
-                        'colsample_bytree': xgb_colsample_bytree,
-                        'reg_lambda': xgb_reg_lambda,
+                        # 默认值
+                        'subsample': 0.8,
+                        'colsample_bytree': 0.8,
+                        'reg_lambda': 1.0,
                         'random_state': 42,
                         'n_jobs': -1,
                         'verbosity': 0
@@ -660,7 +656,8 @@ def prediction_optimization_comparison_page():
                         'initial_temp': sa_initial_temp,
                         'cooling_rate': sa_cooling_rate,
                         'iterations_per_temp': sa_iterations,
-                        'early_stopping_rounds': sa_early_stopping,
+                        # 使用默认值
+                        'early_stopping_rounds': 25,
                         'adaptive_cooling': True
                     },
                     "粒子群优化算法": {
@@ -1668,7 +1665,7 @@ def _display_radar_chart():
             )
         ),
         showlegend=True,
-        title="多维度性能雷达图对比（粗线:XGBoost×模拟退火）",
+
         height=500,
         legend=dict(
             orientation="h",

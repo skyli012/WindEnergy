@@ -1,11 +1,11 @@
 import streamlit as st
 import warnings
 
-from src.optimization.strategy_optimization import strategy_optimization_page
-from src.prediction.ai_prediction import ai_prediction_page
-from src.utils.comparison_page import prediction_optimization_comparison_page
-from src.utils.data_analysis import data_analysis_page
-from src.utils.data_import import data_import_page
+from src.strategy_optimization import strategy_optimization_page
+from src.ai_prediction import ai_prediction_page
+from src.comparison_page import prediction_optimization_comparison_page
+from src.data_analysis import data_analysis_page
+from src.data_import import data_import_page
 
 warnings.filterwarnings('ignore')
 

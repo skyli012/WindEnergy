@@ -1225,10 +1225,11 @@ def display_single_model_results(results, feature_importance, permutation_import
     col4.metric("训练时间", f"{results['training_time']:.2f}秒")
     col5.metric("交叉验证 R²", f"{results['cv_mean']:.4f}")
 
-    # 可视化标签页 - 添加网格搜索分析标签页
-    tab_names = ["预测性能", "残差分析", "特征重要性", "交叉验证", "误差分析", "模型诊断"]
+    # 可视化标签页
     if enable_grid_search and grid_search_results is not None:
-        tab_names.insert(3, "网格搜索分析")
+        tab_names = ["预测性能", "残差分析", "特征重要性", "网格搜索分析", "交叉验证", "误差分析", "模型诊断"]
+    else:
+        tab_names = ["预测性能", "残差分析", "特征重要性", "交叉验证", "误差分析", "模型诊断"]
 
     tabs = st.tabs(tab_names)
 
@@ -1356,7 +1357,8 @@ def display_single_model_results(results, feature_importance, permutation_import
 
     # 网格搜索分析标签页
     if enable_grid_search and grid_search_results is not None:
-        with tabs[3]:
+        grid_search_tab_index = 3
+        with tabs[grid_search_tab_index]:
             st.subheader("🔍 网格搜索分析")
 
             # 获取CV结果
@@ -1702,54 +1704,309 @@ def display_comparison_results(comparison_results, feature_importances, y_true, 
     st.subheader("📊 性能可视化对比")
 
     # 创建标签页
-    tab_names = ["雷达图综合对比", "散点图分析", "指标柱状图", "详细分析"]
-
-    # 如果有网格搜索信息，添加网格搜索标签页
+    tab_names = []
     if grid_search_infos:
-        tab_names.insert(3, "网格搜索对比")
+        tab_names = ["改进雷达图", "散点图分析", "指标柱状图", "网格搜索对比", "详细分析"]
+    else:
+        tab_names = ["改进雷达图", "散点图分析", "指标柱状图", "详细分析"]
 
     tabs = st.tabs(tab_names)
 
-    with tab_names[0]:
-        # 雷达图综合对比
-        categories = ['R²(越高越好)', 'MAE(越低越好)', 'RMSE(越低越好)', '速度(越快越好)']
+    # 改进雷达图标签页
+    with tabs[0]:
+        st.markdown("##### 🎯 算法综合性能雷达图")
+
+        # 为所有指标创建正向化评分（越大越好）
+        df_radar = df_comparison.copy()
+
+        # R²已经是越大越好，保持原值（0-1之间）
+        df_radar['R²得分'] = df_radar['R²']
+
+        # 对MAE进行正向化：MAE越小越好，转换为得分
+        mae_min = df_radar['MAE'].min()
+        mae_max = df_radar['MAE'].max()
+        df_radar['MAE得分'] = 1 - (df_radar['MAE'] - mae_min) / (mae_max - mae_min + 1e-10)
+
+        # 对RMSE进行正向化：RMSE越小越好，转换为得分
+        rmse_min = df_radar['RMSE'].min()
+        rmse_max = df_radar['RMSE'].max()
+        df_radar['RMSE得分'] = 1 - (df_radar['RMSE'] - rmse_min) / (rmse_max - rmse_min + 1e-10)
+
+        # 对训练时间进行正向化：时间越短越好，转换为得分
+        time_min = df_radar['训练时间 (秒)'].min()
+        time_max = df_radar['训练时间 (秒)'].max()
+        df_radar['速度得分'] = 1 - (df_radar['训练时间 (秒)'] - time_min) / (time_max - time_min + 1e-10)
+
+        # 对R²进一步归一化到0-1，但保持相对比例
+        r2_min = df_radar['R²得分'].min()
+        r2_max = df_radar['R²得分'].max()
+        df_radar['R²得分_norm'] = (df_radar['R²得分'] - r2_min) / (r2_max - r2_min + 1e-10)
+
+        # 创建雷达图
+        categories = ['预测精度(R²)', 'MAE表现', 'RMSE表现', '训练速度']
 
         fig_radar = go.Figure()
 
-        colors = px.colors.qualitative.Set3
+        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7']
 
-        for i, row in df_comparison.iterrows():
-            # 归一化指标 (0-1之间，1表示最好)
-            r2_norm = row['R²']  # R²已经是0-1
-            mae_norm = 1 - (row['MAE'] / df_comparison['MAE'].max())
-            rmse_norm = 1 - (row['RMSE'] / df_comparison['RMSE'].max())
-            speed_norm = 1 - (row['训练时间 (秒)'] / df_comparison['训练时间 (秒)'].max())
+        for i, row in df_radar.iterrows():
+            values = [
+                row['R²得分_norm'] * 0.9 + 0.1,  # 稍微调整，避免0值
+                row['MAE得分'] * 0.9 + 0.1,
+                row['RMSE得分'] * 0.9 + 0.1,
+                row['速度得分'] * 0.9 + 0.1
+            ]
 
-            values = [r2_norm, mae_norm, rmse_norm, speed_norm]
-
+            # 添加当前算法到雷达图
             fig_radar.add_trace(go.Scatterpolar(
                 r=values + [values[0]],  # 闭合雷达图
                 theta=categories + [categories[0]],
                 name=row['算法'],
                 fill='toself',
-                opacity=0.6,
-                line=dict(color=colors[i % len(colors)], width=2)
+                opacity=0.7,
+                line=dict(color=colors[i % len(colors)], width=2),
+                hovertemplate=(
+                        f"算法: {row['算法']}<br>" +
+                        "预测精度(R²): %{r:.3f}<br>" +
+                        "MAE表现: %{r:.3f}<br>" +
+                        "RMSE表现: %{r:.3f}<br>" +
+                        "训练速度: %{r:.3f}<extra></extra>"
+                )
             ))
 
         fig_radar.update_layout(
             polar=dict(
                 radialaxis=dict(
                     visible=True,
-                    range=[0, 1]
-                )),
+                    range=[0, 1],
+                    tickvals=[0, 0.2, 0.4, 0.6, 0.8, 1],
+                    ticktext=['0', '0.2', '0.4', '0.6', '0.8', '1'],
+                    tickmode='array',
+                    tickfont=dict(size=10)
+                ),
+                angularaxis=dict(
+                    tickfont=dict(size=12),
+                    rotation=90
+                )
+            ),
             showlegend=True,
-            title="算法综合性能雷达图",
-            height=500
+            title={
+                'text': "算法综合性能雷达图",
+                'x': 0.5,
+                'xanchor': 'center',
+                'font': dict(size=16, family="Arial")
+            },
+            height=550,
+            margin=dict(l=80, r=80, t=80, b=80),
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=1.05,
+                bgcolor='rgba(255, 255, 255, 0.8)',
+                bordercolor='rgba(0, 0, 0, 0.2)',
+                borderwidth=1
+            )
         )
+
+        # 添加图例说明
+        st.info("""
+        **雷达图说明**:
+        - 所有指标均已归一化为0-1之间的得分，**得分越高表示性能越好**
+        - **预测精度(R²)**: R²分数转换而来，越高越好
+        - **MAE表现**: MAE误差转换而来，误差越小得分越高
+        - **RMSE表现**: RMSE误差转换而来，误差越小得分越高
+        - **训练速度**: 训练时间转换而来，时间越短得分越高
+        """)
+
         st.plotly_chart(fig_radar, use_container_width=True)
 
-    # 其他标签页保持不变...
-    # ... [原有的其他对比分析标签页内容保持不变] ...
+        # 添加指标解释表格
+        st.markdown("##### 📊 原始指标与转换得分对照表")
+        score_df = df_radar[['算法', 'R²', 'MAE', 'RMSE', '训练时间 (秒)',
+                             'R²得分_norm', 'MAE得分', 'RMSE得分', '速度得分']].copy()
+        score_df = score_df.round({
+            'R²': 4,
+            'MAE': 3,
+            'RMSE': 3,
+            '训练时间 (秒)': 2,
+            'R²得分_norm': 3,
+            'MAE得分': 3,
+            'RMSE得分': 3,
+            '速度得分': 3
+        })
+        st.dataframe(score_df, use_container_width=True)
+
+    # 散点图分析标签页
+    with tabs[1]:
+        # 散点图对比
+        st.markdown("##### 预测值 vs 真实值对比")
+        fig_scatter = go.Figure()
+
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+
+        for i, (algo, y_pred) in enumerate(predictions.items()):
+            fig_scatter.add_trace(go.Scatter(
+                x=y_true,
+                y=y_pred,
+                mode='markers',
+                name=algo,
+                marker=dict(size=6, opacity=0.6, color=colors[i % len(colors)]),
+                hovertemplate=f'算法: {algo}<br>真实值: %{{x:.2f}}<br>预测值: %{{y:.2f}}<extra></extra>'
+            ))
+
+        # 添加对角线
+        min_val = float(min(y_true.min(), min([pred.min() for pred in predictions.values()])))
+        max_val = float(max(y_true.max(), max([pred.max() for pred in predictions.values()])))
+        fig_scatter.add_trace(go.Scatter(
+            x=[min_val, max_val],
+            y=[min_val, max_val],
+            mode='lines',
+            name='理想拟合线',
+            line=dict(dash='dash', color='black', width=2)
+        ))
+
+        fig_scatter.update_layout(
+            title="各算法预测值与真实值对比",
+            xaxis_title="真实风速 (m/s)",
+            yaxis_title="预测风速 (m/s)",
+            height=500
+        )
+        st.plotly_chart(fig_scatter, use_container_width=True)
+
+    # 指标柱状图标签页
+    with tabs[2]:
+        # 指标柱状图对比
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            fig_r2 = go.Figure()
+
+            # 为每个算法设置颜色
+            colors_r2 = []
+            for algo in df_comparison['算法']:
+                if algo == "XGBoost":
+                    colors_r2.append('#FF6B6B')  # XGBoost使用鲜艳的红色
+                else:
+                    colors_r2.append('#45B7D1')  # 其他模型使用统一的蓝色
+
+            fig_r2.add_trace(go.Bar(
+                x=df_comparison['算法'],
+                y=df_comparison['R²'],
+                marker_color=colors_r2,
+                text=df_comparison['R²'].round(4),
+                textposition='outside'
+            ))
+            fig_r2.update_layout(
+                title="R²分数对比",
+                xaxis_title="算法",
+                yaxis_title="R²",
+                height=460,  # 增加高度为数值标签留出空间
+                margin=dict(t=100, b=60, l=50, r=50),  # 增加上边距和下边距
+                showlegend=False
+            )
+
+            # 添加图例说明，放在图表上方
+            fig_r2.add_annotation(
+                text="<span style='color:#FF6B6B'>■</span> XGBoost<br><span style='color:#45B7D1'>■</span> 其他模型",
+                xref="paper", yref="paper",
+                x=1, y=1.15,  # 将图例放在图表正上方
+                showarrow=False,
+                align="center",
+                font=dict(size=12),
+                bgcolor='rgba(255, 255, 255, 0.8)',
+                bordercolor='rgba(0, 0, 0, 0.2)',
+                borderwidth=1,
+                borderpad=4
+            )
+
+            st.plotly_chart(fig_r2, use_container_width=True)
+
+        with col2:
+            fig_mae = go.Figure()
+
+            # 为每个算法设置颜色
+            colors_mae = []
+            for algo in df_comparison['算法']:
+                if algo == "XGBoost":
+                    colors_mae.append('#FF6B6B')  # XGBoost使用鲜艳的红色
+                else:
+                    colors_mae.append('#45B7D1')  # 其他模型使用统一的蓝色
+
+            fig_mae.add_trace(go.Bar(
+                x=df_comparison['算法'],
+                y=df_comparison['MAE'],
+                marker_color=colors_mae,
+                text=df_comparison['MAE'].round(3),
+                textposition='outside'
+            ))
+            fig_mae.update_layout(
+                title="MAE误差对比",
+                xaxis_title="算法",
+                yaxis_title="MAE",
+                height=460,
+                margin=dict(t=100, b=60, l=50, r=50),
+                showlegend=False
+            )
+
+            # 添加图例说明，放在图表上方
+            fig_mae.add_annotation(
+                text="<span style='color:#FF6B6B'>■</span> XGBoost<br><span style='color:#45B7D1'>■</span> 其他模型",
+                xref="paper", yref="paper",
+                x=1, y=1.15,
+                showarrow=False,
+                align="center",
+                font=dict(size=12),
+                bgcolor='rgba(255, 255, 255, 0.8)',
+                bordercolor='rgba(0, 0, 0, 0.2)',
+                borderwidth=1,
+                borderpad=4
+            )
+
+            st.plotly_chart(fig_mae, use_container_width=True)
+
+        with col3:
+            fig_time = go.Figure()
+
+            # 为每个算法设置颜色
+            colors_time = []
+            for algo in df_comparison['算法']:
+                if algo == "XGBoost":
+                    colors_time.append('#FF6B6B')  # XGBoost使用鲜艳的红色
+                else:
+                    colors_time.append('#45B7D1')  # 其他模型使用统一的蓝色
+
+            fig_time.add_trace(go.Bar(
+                x=df_comparison['算法'],
+                y=df_comparison['训练时间 (秒)'],
+                marker_color=colors_time,
+                text=df_comparison['训练时间 (秒)'].round(2),
+                textposition='outside'
+            ))
+            fig_time.update_layout(
+                title="训练时间对比",
+                xaxis_title="算法",
+                yaxis_title="时间 (秒)",
+                height=460,
+                margin=dict(t=100, b=60, l=50, r=50),
+                showlegend=False
+            )
+
+            # 添加图例说明，放在图表上方
+            fig_time.add_annotation(
+                text="<span style='color:#FF6B6B'>■</span> XGBoost<br><span style='color:#45B7D1'>■</span> 其他模型",
+                xref="paper", yref="paper",
+                x=1, y=1.15,
+                showarrow=False,
+                align="center",
+                font=dict(size=12),
+                bgcolor='rgba(255, 255, 255, 0.8)',
+                bordercolor='rgba(0, 0, 0, 0.2)',
+                borderwidth=1,
+                borderpad=4
+            )
+
+            st.plotly_chart(fig_time, use_container_width=True)
 
     # 网格搜索对比标签页
     if grid_search_infos:
